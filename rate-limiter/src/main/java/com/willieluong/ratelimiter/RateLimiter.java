@@ -4,7 +4,7 @@ package com.willieluong.ratelimiter;
  * Hello world!
  *
  */
-public class App 
+public class RateLimiter
 {
     public static void main( String[] args )
     {
