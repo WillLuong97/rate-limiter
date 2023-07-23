@@ -6,6 +6,7 @@ import org.springframework.data.redis.connection.RedisStandaloneConfiguration;
 import org.springframework.data.redis.connection.jedis.JedisConnectionFactory;
 import org.springframework.data.redis.core.RedisTemplate;
 
+//TODO: Add injectable config value into here instead of hardcoding it like this
 @Configuration
 public class RedisClientConfiguration {
     /**
