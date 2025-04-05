@@ -1,6 +1,7 @@
 .DS_Store
 target/ 
 .idea/
+.vscode/
 aegis-data-plane/MODULE.bazel.lock
 aegis-data-plane/bazel-aegis-data-plane
 aegis-data-plane/bazel-bin
