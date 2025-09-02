@@ -7,3 +7,4 @@ aegis-data-plane/bazel-aegis-data-plane
 aegis-data-plane/bazel-bin
 aegis-data-plane/bazel-out
 aegis-data-plane/bazel-testlogs
+dump.*

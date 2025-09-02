@@ -58,7 +58,7 @@ int main(int argc, char *argv[]) {
         std::cout << "Invalid options! Unable to start the server" << std::endl;
     }
     
-    //After getting the backend information, we will store them into a local, in memory data structure 
-    //So that Aegis can route the data to after the rate limiting process is done 
+    //After getting the backend information, we will store them into a local, in memory data structure, which is a hashmap in this case
+    //So that the rate limiting engine can reference to that data structure after the rate limiting process is done 
 
 }
