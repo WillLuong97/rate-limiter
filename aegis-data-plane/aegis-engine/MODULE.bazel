@@ -1,0 +1,16 @@
+###############################################################################
+# Bazel now uses Bzlmod by default to manage external dependencies.
+# Please consider migrating your external dependencies from WORKSPACE to MODULE.bazel.
+#
+# For more details, please check https://github.com/bazelbuild/bazel/issues/18958
+###############################################################################
+module(
+    name = "aegis-engine-main",
+)
+
+bazel_dep(name = "boost.program_options", version = "1.89.0.bcr.1")
+bazel_dep(name = "boost.filesystem", version = "1.89.0.bcr.1")
+bazel_dep(name = "boost.system", version = "1.89.0.bcr.1")
+bazel_dep(name = "boost.algorithm", version = "1.89.0.bcr.1")
+bazel_dep(name = "boost.asio", version = "1.89.0.bcr.1")
+bazel_dep(name = "boost.thread", version = "1.89.0.bcr.1")

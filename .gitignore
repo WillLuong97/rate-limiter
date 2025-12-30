@@ -1,8 +1,15 @@
 .DS_Store
 target/ 
 .idea/
+.vscode/
 aegis-data-plane/MODULE.bazel.lock
 aegis-data-plane/bazel-aegis-data-plane
 aegis-data-plane/bazel-bin
 aegis-data-plane/bazel-out
 aegis-data-plane/bazel-testlogs
+dump.*
+bazel-bin
+bazel-out
+bazel-testlogs
+test
+MODULE.bazel.lock
