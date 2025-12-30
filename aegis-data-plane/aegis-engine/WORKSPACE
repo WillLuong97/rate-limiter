@@ -1,0 +1,14 @@
+load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
+
+# Use rules_boost - most reliable for Boost
+http_archive(
+    name = "com_github_nelhage_rules_boost",
+    sha256 = "4031539fe0af832c6b6ed6974d820d350299a291ba7337d6c599d4854e47ed88",
+    strip_prefix = "rules_boost-96e9b631f104b43a53c21c87b01ac538ad6f3b48",
+    urls = [
+        "https://github.com/nelhage/rules_boost/archive/96e9b631f104b43a53c21c87b01ac538ad6f3b48.tar.gz",
+    ],
+)
+
+load("@com_github_nelhage_rules_boost//:boost/boost.bzl", "boost_deps")
+boost_deps()

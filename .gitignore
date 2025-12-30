@@ -8,3 +8,8 @@ aegis-data-plane/bazel-bin
 aegis-data-plane/bazel-out
 aegis-data-plane/bazel-testlogs
 dump.*
+bazel-bin
+bazel-out
+bazel-testlogs
+test
+MODULE.bazel.lock
