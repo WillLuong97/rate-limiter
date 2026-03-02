@@ -10,27 +10,36 @@
  * If the bucket is empty, the request is denied until more tokens are added over time. (https://medium.com/@surajshende247/token-bucket-algorithm-rate-limiting-db4c69502283)
  *  
  * **/
-#include <iostream> 
-#include <string>
-#include "Bucket.h"
-using namespace std; 
+#pragma once
+
+#include <chrono>
+#include <mutex>
+#include <stdexcept>
 
 class TokenBucket {
-    public: 
-    string* createBucket(); 
-    Bucket getBucket(string* bucketId);
-    Bucket generateToken(); 
-    void refillTokenForBucket(string* bucketId, Bucket bucket);
-    void consumeTokenFromBucket(string* bucketId); 
-    int* bucketSize(string* bucketId);
-    void deleteBucket(string* bucketId); 
+public:
+    // capacity     : max tokens the bucket can hold
+    // refill_rate  : tokens added per second
+    TokenBucket(double capacity, double refill_rate);
 
-    void dropRequest();
-    void routeToBackend(string* requestId, string* backendId); 
+    // Attempt to consume `tokens` tokens.
+    // Returns true if successful, false if not enough tokens.
+    bool consume(double tokens = 1.0);
 
-    private: 
-    Bucket *bucket;
-    int* bucketId; 
-    string* requestId; 
-    string* backendId; 
+    // Block until `tokens` tokens are available, then consume them.
+    void consume_blocking(double tokens = 1.0);
+
+    // Returns the current number of available tokens.
+    double available_tokens();
+
+private:
+    // Refills tokens based on elapsed time since last refill.
+    // NOTE: Must be called with mutex_ already held.
+    void refill();
+
+    double capacity_;
+    double refill_rate_;
+    double tokens_;
+    std::chrono::steady_clock::time_point last_refill_;
+    std::mutex mutex_;
 };
