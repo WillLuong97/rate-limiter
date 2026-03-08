@@ -1,6 +1,6 @@
 /**
  * Header file containing the fucntions to implement the token bucket algorithm for the Aegis 
- * rate limiting capability. 
+ * rate limiting algorithm. 
  * 
  * The Token Bucket Algorithm is a simple yet effective technique used to control the rate at which requests are made to a system or server.
  * Picture it as an actual bucket that gets filled with tokens over time.
@@ -18,16 +18,13 @@
 
 class TokenBucket {
 public:
-    // capacity     : max tokens the bucket can hold
+    // capacity     : max tokens the buckets can hold
     // refill_rate  : tokens added per second
-    TokenBucket(double capacity, double refill_rate);
+    TokenBucket(int capacity, int refill_rate);
 
     // Attempt to consume `tokens` tokens.
     // Returns true if successful, false if not enough tokens.
-    bool consume(double tokens = 1.0);
-
-    // Block until `tokens` tokens are available, then consume them.
-    void consume_blocking(double tokens = 1.0);
+    bool consume(int consumed_token = 1);
 
     // Returns the current number of available tokens.
     double available_tokens();
@@ -38,8 +35,8 @@ private:
     void refill();
 
     double capacity_;
-    double refill_rate_;
-    double tokens_;
+    int refill_rate_;
+    int currently_available_tokens;
     std::chrono::steady_clock::time_point last_refill_;
     std::mutex mutex_;
 };

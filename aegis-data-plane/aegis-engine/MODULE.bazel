@@ -14,5 +14,5 @@ bazel_dep(name = "boost.system", version = "1.89.0.bcr.1")
 bazel_dep(name = "boost.algorithm", version = "1.89.0.bcr.1")
 bazel_dep(name = "boost.asio", version = "1.89.0.bcr.1")
 bazel_dep(name = "boost.thread", version = "1.89.0.bcr.1")
-
+bazel_dep(name = "googletest", version = "1.14.0")
 bazel_dep(name = "rules_cc", version = "0.0.9")

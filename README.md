@@ -45,10 +45,6 @@ Therefore, project Aegis is created to provide a Rate limiting solution to help 
 
 - Similarly, Partition Tolerance would be another priority for Aegis as our system would still stay up despite 1 or 2 nodes of Aegis's cluster fail to communicate with each other due to a network loss.
 
-
-## Architecture
-![Alt text](<media/Rate Limiter Architecture Design.png>)
-
 ## Implementation 
 
 ### Core entities: 
@@ -67,23 +63,17 @@ Therefore, project Aegis is created to provide a Rate limiting solution to help 
 
 - The data plane provides the primary functionality of Aegis, which handles setting up the right Rate Limiting instance that our customer wants, implement the appropriate algorithm to rate limit request, and drop packets that violates the rate limiting rules or forward them to the backend application. 
 
+### Architecture
+![Alt text](<media/Rate Limiter Architecture Design.png>)
 
-### High level design 
+#### High level design
+- Aegis should be placed at the edge of our network, i.e, the API Gateway or Load Balancers (LB). The idea is to prevent the attackers from reaching our microservices by finding and dropping bad requests at the gateways. As a result, any traffic arrives at the API gateway or LB will then be checked by Aegis to see whether or not we can allow the traffic to go through to the microservices.
 
-1. Where should our rate limiter in our architecture? 
+- In addition, by placing Aegis in the same server as the API Gateway or LB, it would reduce the latency that comes with making calls to another service in another server when checking the incoming requests while still maintaining the global rate limiting scale for our microservices. 
 
+- When determining if a request can be allowed to go through, Aegis relies the rate limiting algorithms to check if the current requests have violated the rate limting rules configured. The section below will go in details about the supported rate limiting algorithms 
 
-
-
-
-2. How should we identify our clients? 
-
-
-
-
-
-
-### Algorithm and Data storage design
+#### Rate limiting Algorithms 
 
 This section will cover how Aegis will implement each of the mentioned rate limiting algorithms as well as the design strategy for the database as well. The database and algorithm 
 designed are combined into a single section because each of the algorithm has different ways of storing and using the data. 
@@ -96,13 +86,14 @@ designed are combined into a single section because each of the algorithm has di
 
 4. Sliding Window counter
 
+| Algorithm  |  Description | Pros  | Cons |
+| ------------- | ------------- | ------------- | ------------- |
+| Token Bucket  | Content Cell  | Content Cell  | Content Cell  |
+| Leaky Bucket  | Content Cell  | Content Cell  | Content Cell  |
+| Fixed Window counter  | Content Cell  | Content Cell  | Content Cell  |
+| Leaky Bucket  | Content Cell  | Content Cell  | Content Cell  |
 
-
-## Continuous Integration and Continuous Delivery (CICD/Devops)
-
-
-
-
+###
 
 
 ## References

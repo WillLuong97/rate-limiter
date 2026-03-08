@@ -22,3 +22,13 @@ cc_binary(
         ":token_bucket_lib"
     ]
 )
+
+cc_test(
+    name = "token_bucket_test",
+    srcs = ["test/token_bucket_test.cc"],
+    deps = [
+        ":token_bucket_lib",
+        "@googletest//:gtest_main",
+    ],
+)
+
