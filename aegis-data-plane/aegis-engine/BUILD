@@ -10,7 +10,9 @@ load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library", "cc_test")
 cc_library(
     name = "token_bucket_lib",
     srcs = ["rate-limiting-algorithm/token_bucket.cc"],
-    hdrs = ["rate-limiting-algorithm/token_bucket.h"],
+    hdrs = ["rate-limiting-algorithm/Bucket.h",
+            "rate-limiting-algorithm/rate_limiter.h",
+            "rate-limiting-algorithm/token_bucket.h"],
     visibility = ["//visibility:public"],
 )
 

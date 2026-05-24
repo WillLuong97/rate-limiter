@@ -13,10 +13,11 @@
 #pragma once
 
 #include <chrono>
+#include "rate_limiter.h"
 #include <mutex>
 #include <stdexcept>
 
-class TokenBucket {
+class TokenBucket : public RateLimiter {
 public:
     // capacity     : max tokens the buckets can hold
     // refill_rate  : tokens added per second
@@ -24,10 +25,10 @@ public:
 
     // Attempt to consume `tokens` tokens.
     // Returns true if successful, false if not enough tokens.
-    bool consume(int consumed_token = 1);
+    bool consume(int consumed_token = 1) override;
 
     // Returns the current number of available tokens.
-    double available_tokens();
+    double available() override;
 
 private:
     // Refills tokens based on elapsed time since last refill.

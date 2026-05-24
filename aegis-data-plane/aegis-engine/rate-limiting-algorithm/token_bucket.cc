@@ -31,7 +31,7 @@ bool TokenBucket::consume(int consumed_token) {
     return false;
 }
 
-double TokenBucket::available_tokens() {
+double TokenBucket::available() {
     std::lock_guard<std::mutex> lock(mutex_);
     refill();
     return currently_available_tokens;
