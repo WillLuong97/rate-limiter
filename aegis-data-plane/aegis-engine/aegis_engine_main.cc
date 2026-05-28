@@ -24,8 +24,10 @@ int main(int argc, char * argv[])
 {
    // swap any of these in and process_requests() works identically
    std::unique_ptr<RateLimiter> limiter;
-   //Init the bucket, 5 bucket at full capacity and refil them 1 token per second
+
+   //Init the bucket, 5 buckets at full capacity and refil them 1 token per second
    limiter = std::make_unique<TokenBucket>(5, 1);
+   
    //Initialize the token bucket
    for (int request = 0; request <= 100; request++) {
       if (request % 2 == 0) {

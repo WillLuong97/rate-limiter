@@ -13,6 +13,8 @@ cc_library(
     hdrs = ["rate-limiting-algorithm/Bucket.h",
             "rate-limiting-algorithm/rate_limiter.h",
             "rate-limiting-algorithm/token_bucket.h"],
+    deps = ["@hiredis//:hiredis"],
+    copts = ["-std=c++17"],
     visibility = ["//visibility:public"],
 )
 
@@ -22,7 +24,9 @@ cc_binary(
     deps = [
         "@boost.program_options",
         ":token_bucket_lib"
-    ]
+    ],
+    copts = ["-std=c++17"],
+    linkopts = ["-lpthread"],
 )
 
 cc_test(
