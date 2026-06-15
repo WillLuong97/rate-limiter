@@ -34,10 +34,12 @@ private:
     // Refills tokens based on elapsed time since last refill.
     // NOTE: Must be called with mutex_ already held.
     void refill();
-
+    std::string key_; 
     double capacity_;
     int refill_rate_;
     int currently_available_tokens;
+    std::string redis_host_; 
+    std::string redis_port_; 
     std::chrono::steady_clock::time_point last_refill_;
     std::mutex mutex_;
 };
