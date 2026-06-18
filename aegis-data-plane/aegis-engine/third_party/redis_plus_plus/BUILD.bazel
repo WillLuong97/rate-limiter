@@ -1,0 +1,10 @@
+load("@rules_cc//cc:defs.bzl", "cc_library")
+
+cc_library(
+    name = "redis++",
+    hdrs = glob(["include/sw/**/*.h"]),
+    includes = ["include"],
+    srcs = ["lib/libredis++.a"],
+    deps = ["@hiredis//:hiredis"],   # hiredis is in BCR — reuse it directly
+    visibility = ["//visibility:public"],
+)
