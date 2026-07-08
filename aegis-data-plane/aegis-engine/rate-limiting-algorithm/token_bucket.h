@@ -111,7 +111,7 @@ private:
 
             -- Auto-expired the key for this IP after 1 hour of inactivity, meaning the key has not been hit 
             redis.call('EXPIRE', key, 3600)
-            return 1
+            return 0
 
         else
             -- Not enough tokens — update last_refill but do not consume
@@ -122,7 +122,7 @@ private:
             -- Auto-expired the key for this IP after 1 hour of inactivity, meaning the key has not been hit 
             redis.call('EXPIRE', key, 3600)
 
-            return 0
+            return 1
     )";
     
 };

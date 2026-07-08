@@ -17,7 +17,7 @@ TokenBucket::TokenBucket(const string& key,
                 :key_(key), 
                 capacity_(capacity),
                 refill_rate_(refill_rate),
-                redis_uri_(redis_uri) // connects + discovers cluster topology automatically
+                cluster_(redis_uri) // connects + discovers cluster topology automatically
 {
     if (capacity <= 0) {
         throw std::invalid_argument("Capacity must be positive.");
@@ -46,7 +46,6 @@ static double unix_time_now() {
 // Token bucket interface implementation 
 // -----------------------------------------------------------------------------
 bool TokenBucket::consume(int tokens) {
-    std::lock_guard<std::mutex> lock(mutex_);
     return execute_token_consumption_script(tokens); 
 }
 
@@ -70,7 +69,7 @@ int TokenBucket::available() {
     auto raw_last_refill = cluster_.hget(key_, "last_refill"); 
 
     int tokens = raw_available_tokens ? stoi(*raw_available_tokens) : capacity_;
-    double last_refill = raw_last_refill ? stoi(*raw_last_refill) : unix_time_now();
+    double last_refill = raw_last_refill ? stod(*raw_last_refill) : unix_time_now();
 
     double elapsed = unix_time_now() - last_refill; 
     return min(capacity_ , tokens + elapsed * last_refill); 
@@ -80,5 +79,25 @@ int TokenBucket::available() {
 // Private helpers
 // -----------------------------------------------------------------------------
 bool execute_token_consumption_script(int token_requested) {
-//Todo: implement logics to get, consume and update redis cluster
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    auto now = unix_time_now();
+
+    try {
+        long long result = cluster_.eval<long long> (
+            CONSUME_SCRIPT, 
+            { key_ }, 
+            {
+                to_string(capacity_),
+                to_string(refill_rate_), 
+                to_string(token_requested), 
+                to_string(now)
+            }
+        ); 
+        return result == 0; //redis script returned status code 0
+    } catch (const sw::redis::Error & e) {
+        cerr << "[token_bucket] Redis cluster error: " << e.what()
+            << " --failing open\n"; 
+        return true; //Fail open, report the error but still let the request to go through
+    }
 }; 

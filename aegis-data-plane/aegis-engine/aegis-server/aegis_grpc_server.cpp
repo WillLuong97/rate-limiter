@@ -9,12 +9,10 @@ using Code = envoy::service::ratelimit::v3::RateLimitResponse::Code;
 RateLimitServiceImpl::RateLimitServiceImpl(
     int capacity, 
     int refill_rate, 
-    const std::string& redis_host, 
-    int redis_port) 
+    const std::string& cluster_nodes) 
     : capacity_(capacity), 
       refill_rate_(refill_rate), 
-      redis_host_(redis_host), 
-      redis_port_(redis_port)
+      cluster_nodes_(redis_host), 
 {}
 
 

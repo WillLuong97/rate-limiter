@@ -31,10 +31,8 @@ class RateLimitServiceImpl final : public RateLimitService::Service {
         explicit RateLimitServiceImpl (
             int capacity = 100;  //100 tokens
             int refill_rate = 10; //10 seconds refill rate 
-            const std::string& redis_host = "127.0.0.1"; //default redis server host ip address
-            int redis_port = 6379; //default redis server ip port 
-        ); 
-
+            const std::string& cluster_nodes = "tcp://127.0.0.1:7001";
+       ); 
 
         grpc::Status ShouldRateLimit(
             grpc::ServerContext* context, 
@@ -53,11 +51,9 @@ class RateLimitServiceImpl final : public RateLimitService::Service {
     //Get or create a token bucket for a given redis key
     RateLimiter* get_or_create_limiter(const std::string key); 
 
-    int capacity = 100;  //100 tokens
-    int refill_rate = 10; //10 seconds refill rate 
-    const std::string& redis_host = "127.0.0.1"; //default redis server host ip address
-    int redis_port = 6379; //default redis server ip port 
-
+    std::string cluster_nodes_; 
+    int capacity_ = 100;  //100 tokens
+    int refill_rate_ = 10; //10 seconds refill rate 
     //One token bucket per IP address: 
     std::unordered_map<std::string, std::unique_ptr<RateLimiter>> limiters_; 
     std::mutex limiter_mutex;   
