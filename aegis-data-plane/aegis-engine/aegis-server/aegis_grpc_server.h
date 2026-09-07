@@ -7,7 +7,7 @@
 #pragma once
 
 #include <grpcpp/grpcpp.h>
-#include "ratelimit.grpc.pb.h"       // generated from Envoy's proto
+#include "envoy/service/ratelimit/v3/rls.grpc.pb.h"
 #include "rate-limiting-algorithm/rate_limiter.h"
 #include "rate-limiting-algorithm/token_bucket.h"
 
@@ -29,9 +29,9 @@ class RateLimitServiceImpl final : public RateLimitService::Service {
         //compiler to enforce the user to this class to explicitly call out 
         // the RateLimitServiceImpl class type when calling it 
         explicit RateLimitServiceImpl (
-            int capacity = 100;  //100 tokens
-            int refill_rate = 10; //10 seconds refill rate 
-            const std::string& cluster_nodes = "tcp://127.0.0.1:7001";
+            int capacity = 100,  //100 tokens
+            int refill_rate = 10, //10 seconds refill rate 
+            const std::string& cluster_nodes = "tcp://127.0.0.1:7001"
        ); 
 
         grpc::Status ShouldRateLimit(
@@ -57,4 +57,4 @@ class RateLimitServiceImpl final : public RateLimitService::Service {
     //One token bucket per IP address: 
     std::unordered_map<std::string, std::unique_ptr<RateLimiter>> limiters_; 
     std::mutex limiter_mutex;   
-}
+};

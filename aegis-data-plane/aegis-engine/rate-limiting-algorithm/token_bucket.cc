@@ -12,8 +12,7 @@ using namespace std::chrono;
 TokenBucket::TokenBucket(const string& key, 
                 int capacity, 
                 int refill_rate,
-                const string& redis_uri, 
-                )
+                const string& redis_uri)
                 :key_(key), 
                 capacity_(capacity),
                 refill_rate_(refill_rate),
@@ -46,17 +45,23 @@ static double unix_time_now() {
 // Token bucket interface implementation 
 // -----------------------------------------------------------------------------
 bool TokenBucket::consume(int tokens) {
+    //Todo: Add specific token consumption states of token consumption here to let us know whether the token is being allowed, denied or unable to consume it. We should add enums such as, ALLOWED, DENIED, ERROR
     return execute_token_consumption_script(tokens); 
 }
 
 //Block token consumption until we have refilled the buckets to enough tokens
 void TokenBucket::consume_blocking(int tokens_requested) {
-    while (execute_token_consumption_script(tokens)) {
+    //Todo: Add specific token consumption states here to let us know whether the token is being allowed, denied or unable to consume it. We should add enums such as, ALLOWED, DENIED, ERROR
+    while (!execute_token_consumption_script(tokens_requested)) {
         int available_tokens = available();
         int deficit = tokens_requested -  available_tokens;
         //Calcuate how long we should wait to fill up the deficits and then retry consuming the tokens
-        auto wait_ms = static_cast<long long>((deficit / available_tokens) * 1000); 
-        this_thread::sleep_for(chrono::milliseconds(wait_ms)); 
+
+        long long wait_ms = 1000; // fallback if refill_rate_ can't cover it this tick
+        if (refill_rate_ > 0) {
+            wait_ms = static_cast<long long>((static_cast<double>(deficit) / refill_rate_) * 1000);
+        }
+        this_thread::sleep_for(chrono::milliseconds(std::max(wait_ms, 1LL)));
     }
 }
 
@@ -71,14 +76,15 @@ int TokenBucket::available() {
     int tokens = raw_available_tokens ? stoi(*raw_available_tokens) : capacity_;
     double last_refill = raw_last_refill ? stod(*raw_last_refill) : unix_time_now();
 
-    double elapsed = unix_time_now() - last_refill; 
-    return min(capacity_ , tokens + elapsed * last_refill); 
+    double elapsed = unix_time_now() - last_refill;
+    double refilled = std::min(static_cast<double>(capacity_), tokens + elapsed * refill_rate_);
+    return static_cast<int>(refilled);
 }
 
 // -----------------------------------------------------------------------------
 // Private helpers
 // -----------------------------------------------------------------------------
-bool execute_token_consumption_script(int token_requested) {
+bool TokenBucket::execute_token_consumption_script(int token_requested) {
     std::lock_guard<std::mutex> lock(mutex_);
 
     auto now = unix_time_now();

@@ -73,9 +73,9 @@ private:
     // ARGV[3]  = tokens_requested     e.g. 1
     // ARGV[4]  = current unix time    e.g. 1717000000.123
     //
-    // Returns: 1 if allowed, 0 if denied
+    // Returns: 0 if allowed, 1 if denied
     static constexpr const char* CONSUME_SCRIPT = R"(
-        local key = KEY[1]
+        local key = KEYS[1]
         local capacity = tonumber(ARGV[1])
         local refill_rate = tonumber(ARGV[2])
         local token_req = tonumber(ARGV[3])

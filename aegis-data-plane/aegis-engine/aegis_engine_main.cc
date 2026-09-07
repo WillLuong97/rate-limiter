@@ -2,6 +2,10 @@
 #include <boost/program_options.hpp>
 #include "rate-limiting-algorithm/token_bucket.h"
 #include "rate-limiting-algorithm/rate_limiter.h"
+ #include <grpcpp/grpcpp.h>
+#include "aegis-server/aegis_grpc_server.h"
+#include <iostream>
+
 #include <thread>
 namespace po = boost::program_options;
 
@@ -22,23 +26,31 @@ bool runAegisEngine(RateLimiter& limiter) {
 
 int main(int argc, char * argv[])
 {
-   // swap any of these in and process_requests() works identically
-   std::unique_ptr<RateLimiter> limiter;
 
-   //Init the bucket, 5 buckets at full capacity and refil them 1 token per second
-   limiter = std::make_unique<TokenBucket>(5, 1);
+   // All 3 primary seed nodes listed for resilience at startup —
+    // if one is down, redis-plus-plus tries the next one in the list
+   const std::string cluster_nodes =
+        "tcp://172.20.0.11:6379,"
+        "tcp://172.20.0.12:6379,"
+        "tcp://172.20.0.13:6379";
+
+   RateLimitServiceImpl service(
+      100,    // capacity:    100 tokens per IP
+      10,      // refill_rate: 10 tokens per second
+      cluster_nodes
+   ); 
    
-   //Initialize the token bucket
-   for (int request = 0; request <= 100; request++) {
-      if (request % 2 == 0) {
-         //Wait for 1 a second for every requests that is even so that we can 
-         //keep the rate limiter a chance to refil the bucket
-         std::this_thread::sleep_for(std::chrono::seconds(1));
-      }
-      if (runAegisEngine(*limiter)) {
-         cout << "Request ID: " << request << " is forwarded!" << endl; 
-      } else {
-         cout << "Request ID: " << request << " has been dropped!" << endl; 
-      }
-   }; 
+
+   //Building and starting a gRPC server to wait for Envoy gRPC rate limting request
+   grpc::ServerBuilder builder; 
+   builder.AddListeningPort(
+      "0.0.0.0:8081", 
+      grpc::InsecureServerCredentials() //Todo: For production deployment, replace this with grpc::SslServerCredentials() for a more secure credential with mtls. 
+   );
+   builder.RegisterService(&service);
+
+   unique_ptr<grpc::Server> server(builder.BuildAndStart()); 
+   cout << "[aegis-main] Aegis Engine listening on :8081\n"; 
+   server->Wait(); 
+   return 0; 
 }

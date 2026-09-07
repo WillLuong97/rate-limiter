@@ -1,8 +1,8 @@
-#include <aegis_grpc_server.h> 
+#include "aegis-server/aegis_grpc_server.h" 
 #include <iostream> 
 
 
-//Alias for for Envoy reponse code 
+//Alias for for Envoy response code 
 using Code = envoy::service::ratelimit::v3::RateLimitResponse::Code;
 
 //Constructor 
@@ -10,9 +10,9 @@ RateLimitServiceImpl::RateLimitServiceImpl(
     int capacity, 
     int refill_rate, 
     const std::string& cluster_nodes) 
-    : capacity_(capacity), 
-      refill_rate_(refill_rate), 
-      cluster_nodes_(redis_host), 
+      : cluster_nodes_(cluster_nodes),
+        capacity_(capacity),
+        refill_rate_(refill_rate)
 {}
 
 
@@ -22,10 +22,10 @@ RateLimitServiceImpl::RateLimitServiceImpl(
  It receives a RateLimitRequest, unpacks the IP address from the descriptors,
  runs the token bucket logic, and writes OK or OVER_LIMIT into the response.
  * ***/
-grpc::Status ShouldRateLimit(
+grpc::Status RateLimitServiceImpl::ShouldRateLimit(
             grpc::ServerContext* context, 
             const RateLimitRequest* request, 
-            RateLimitResponse* reponse)
+            RateLimitResponse* response)
 {
 
     //Unpack the request from Envoy and extract the IP address that we want to rate limit on 
@@ -36,7 +36,7 @@ grpc::Status ShouldRateLimit(
     if (incoming_ip.empty()) {
         //No IP address is found in the request, return an error code to Envoy -- log and fail open (Unable to perform rate limiting, so we will let the request to go through)
         std::cerr << "Error: no IP address is found in the Envoy rate limit request, allowing request to go through\n";
-        reponse->set_overall_code(Code::OK);  
+        response->set_overall_code(RateLimitResponse::OK);  
         return grpc::Status::OK; 
     };
 
@@ -48,33 +48,33 @@ grpc::Status ShouldRateLimit(
     //The limiter will be a pointer to a specific rate limiter class 
     RateLimiter* limiter = get_or_create_limiter(bucket_key);
 
-    if (limiter.consume()) {
-        response->set_overall_code(Code::OK);
-        std:cout << "Info: Token for IP " 
+    if (limiter->consume()) {
+        response->set_overall_code(RateLimitResponse::OK);
+        std::cout << "Info: Token for IP " 
                  << incoming_ip 
                  << " still available with " 
-                 << limiter.available() 
+                 << limiter->available() 
                  << " tokens left, allowing through!\n"; 
     } else {
-        repsonse->set_overall_code(Code::OVER_LIMIT);  
-        str::cerr << "Error: Rate Limit Exceeded! "
+        response->set_overall_code(RateLimitResponse::OVER_LIMIT);  
+        std::cerr << "Error: Rate Limit Exceeded! "
                   << "Token for IP " 
                   << incoming_ip 
                   << " is no longer with " 
-                  << limiter.available() 
+                  << limiter->available() 
                   << " tokens left, blocking access \n";  
         
         //Set header to 429, too many requests back to Envoy to let them know that the request has exceeded 
         //And let the client to retry. Envoy injects this header automatically.
         auto* header = response->add_response_headers_to_add(); 
-        header->mutable_header()->set_key("X-RateLimit-RetryAfter"); 
-        header->mutable_header()->set_value("5") // retry after 5 second 
+        header->set_key("X-RateLimit-RetryAfter"); 
+        header->set_value("5"); // retry after 5 second 
 
 
         //Add an additional header to let the customer know their current rate limit token count 
         auto* additional_header = response->add_response_headers_to_add(); 
-       additional_header->mutable_header()->set_key("X-RateLimit-Remaining"); 
-       additional_header->mutable_header()->set_value("0") 
+       additional_header->set_key("X-RateLimit-Remaining"); 
+       additional_header->set_value("0"); 
     }
 
     return grpc::Status::OK;
@@ -99,8 +99,8 @@ std::string RateLimitServiceImpl::extract_ip(const RateLimitRequest* request) {
     //           └── entries[]
     //                 ├── key:   "remote_address"
     //                 └── value: "203.0.113.42"
-    for (auto* descriptor : request->descriptors()) {
-        for (auto* entry : request->entries()) {
+    for (const auto& descriptor : request->descriptors()) {
+        for (auto& entry : descriptor.entries()) {
             if (entry.key() == "remote_address") {
                 return entry.value(); 
             }
@@ -115,18 +115,16 @@ RateLimiter* RateLimitServiceImpl::get_or_create_limiter(const std::string key) 
     std::lock_guard<std::mutex> lock(limiter_mutex); 
 
     //if the rate limiter is not yet created, then we will create a new one for this current IP address 
-    if (limiters_.find(key) == limiters.end()) {
+    if (limiters_.find(key) == limiters_.end()) {
         //A token bucket currently does not exist for the current key, starting a new ones 
         std::cout << "Info: Creating a new token bucket for key: " << key << "\n"; 
         limiters_[key] = std::make_unique<TokenBucket>(
             key,
             capacity_, 
             refill_rate_,
-            //the below values are new, will need to add it into TokenBucket.h 
-            redis_host_, 
-            redis_port_
+            cluster_nodes_
         );
     }
 
-    return *limiters_[key]; 
+    return limiters_[key].get(); 
 }
