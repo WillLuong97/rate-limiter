@@ -6,6 +6,11 @@
 bazel build //:aegis-engine-main
 ```
 
+## Command to build with Docker 
+```
+docker compose up -d --build
+```
+
 ## To run the project after it got built 
 ```
 bazel run //:aegis-engine-main

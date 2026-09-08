@@ -26,13 +26,11 @@ bool runAegisEngine(RateLimiter& limiter) {
 
 int main(int argc, char * argv[])
 {
+   std::cout << std::unitbuf;   // force cout to flush after every insertion
 
-   // All 3 primary seed nodes listed for resilience at startup —
-    // if one is down, redis-plus-plus tries the next one in the list
-   const std::string cluster_nodes =
-        "tcp://172.20.0.11:6379,"
-        "tcp://172.20.0.12:6379,"
-        "tcp://172.20.0.13:6379";
+   //todo: If you want genuine multi-seed startup resilience later, 
+   //that requires the other RedisCluster overload (ConnectionOptions/ClusterOptions),
+  const std::string cluster_nodes = "tcp://172.20.0.11:6379"; 
 
    RateLimitServiceImpl service(
       100,    // capacity:    100 tokens per IP

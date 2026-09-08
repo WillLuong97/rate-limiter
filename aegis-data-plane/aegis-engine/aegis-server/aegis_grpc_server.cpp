@@ -116,14 +116,20 @@ RateLimiter* RateLimitServiceImpl::get_or_create_limiter(const std::string key) 
 
     //if the rate limiter is not yet created, then we will create a new one for this current IP address 
     if (limiters_.find(key) == limiters_.end()) {
-        //A token bucket currently does not exist for the current key, starting a new ones 
-        std::cout << "Info: Creating a new token bucket for key: " << key << "\n"; 
-        limiters_[key] = std::make_unique<TokenBucket>(
-            key,
-            capacity_, 
-            refill_rate_,
-            cluster_nodes_
-        );
+        try {
+            //A token bucket currently does not exist for the current key, starting a new ones 
+            std::cout << "Info: Creating a new token bucket for key: " << key << "\n"; 
+            limiters_[key] = std::make_unique<TokenBucket>(
+                key,
+                capacity_, 
+                refill_rate_,
+                cluster_nodes_
+            );
+        } catch (const std::exception& e) {
+            std::cerr << "[get_or_create_limiter] TokenBucket construction failed: "
+                       << e.what() << "\n";
+            throw;   // re-throw so behavior is unchanged — this just logs before it escapes
+        }
     }
 
     return limiters_[key].get(); 

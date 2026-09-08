@@ -1,0 +1,131 @@
+version: '3.8'
+
+networks:
+  aegis-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16   # must match the IPs hardcoded in aegis_engine_main.cc
+
+services:
+  # ── Aegis Engine gRPC rate limiter ───────────────────────────────────
+  redis-node-1:
+    image: redis:8.8.0
+    container_name: token-store-master-1
+    command: redis-server /usr/local/etc/redis/redis.conf
+    volumes:
+      - ./redis/redis.conf:/usr/local/etc/redis/redis.conf
+    networks:
+      aegis-network:
+        ipv4_address: 172.20.0.11
+    ports: ["7001:6379"]
+
+  redis-node-2:
+    image: redis:8.8.0
+    container_name: token-store-master-2
+    command: redis-server /usr/local/etc/redis/redis.conf
+    volumes:
+      - ./redis/redis.conf:/usr/local/etc/redis/redis.conf
+    networks:
+      aegis-network:
+        ipv4_address: 172.20.0.12
+    ports: ["7002:6379"]
+
+  redis-node-3:
+    image: redis:8.8.0
+    container_name: token-store-master-3
+    command: redis-server /usr/local/etc/redis/redis.conf
+    volumes:
+      - ./redis/redis.conf:/usr/local/etc/redis/redis.conf
+    networks:
+      aegis-network:
+        ipv4_address: 172.20.0.13
+    ports: ["7003:6379"]
+
+  redis-node-4:
+    image: redis:8.8.0
+    container_name: token-store-replica-1
+    command: redis-server /usr/local/etc/redis/redis.conf
+    volumes:
+      - ./redis/redis.conf:/usr/local/etc/redis/redis.conf
+    networks:
+      aegis-network:
+        ipv4_address: 172.20.0.14
+    ports: ["7004:6379"]
+
+  redis-node-5:
+    image: redis:8.8.0
+    container_name: token-store-replica-2
+    command: redis-server /usr/local/etc/redis/redis.conf
+    volumes:
+      - ./redis/redis.conf:/usr/local/etc/redis/redis.conf
+    networks:
+      aegis-network:
+        ipv4_address: 172.20.0.15
+    ports: ["7005:6379"]
+
+  redis-node-6:
+    image: redis:8.8.0
+    container_name: token-store-replica-3
+    command: redis-server /usr/local/etc/redis/redis.conf
+    volumes:
+      - ./redis/redis.conf:/usr/local/etc/redis/redis.conf
+    networks:
+      aegis-network:
+        ipv4_address: 172.20.0.16
+    ports: ["7006:6379"]
+
+  redis-cluster-init:
+    image: redis:8.8.0
+    container_name: token-cluster-init
+    depends_on:
+      - redis-node-1
+      - redis-node-2
+      - redis-node-3
+      - redis-node-4
+      - redis-node-5
+      - redis-node-6
+    networks:
+      - aegis-network
+    command: >
+      bash -c "sleep 5 && redis-cli --cluster create
+      172.20.0.11:6379 172.20.0.12:6379 172.20.0.13:6379
+      172.20.0.14:6379 172.20.0.15:6379 172.20.0.16:6379
+      --cluster-replicas 1 --cluster-yes"
+    restart: "no"
+
+  # ── Aegis Engine gRPC rate limiter ───────────────────────────────────
+  aegis_engine:                     # name must match envoy.yaml's cluster address
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: aegis_engine
+    networks:
+      - aegis-network
+    depends_on:
+      - redis-cluster-init
+    restart: on-failure
+
+  # ── Envoy API Gateway ─────────────────────────────────────────────
+  envoy:
+    image: envoyproxy/envoy:v1.29-latest
+    container_name: envoy
+    volumes:
+      - ./gateway/config/envoy.yaml:/etc/envoy/envoy.yaml:ro
+    command: ["envoy", "-c", "/etc/envoy/envoy.yaml"]
+    ports:
+      - "8080:8080"   # traffic
+      - "9901:9901"   # admin
+    networks:
+      - aegis-network
+    depends_on:
+      - aegis_engine
+      - backend
+
+  # ── Placeholder backend (swap for your real service) ────────────────
+  backend:                          # name must match envoy.yaml's cluster address
+    image: python:3.12-slim
+    container_name: backend
+    command: ["python3", "-m", "http.server", "9090"]
+    networks:
+      - aegis-network
