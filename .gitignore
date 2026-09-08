@@ -4,10 +4,11 @@ target/
 .idea/
 .vscode/
 aegis-data-plane/MODULE.bazel.lock
-aegis-data-plane/bazel-aegis-data-plane
-aegis-data-plane/bazel-bin
-aegis-data-plane/bazel-out
-aegis-data-plane/bazel-testlogs
+aegis-data-plane/aegis-engine/bazel-aegis-data-plane
+aegis-data-plane/aegis-engine/bazel-bin
+aegis-data-plane/aegis-engine/bazel-out
+aegis-data-plane/aegis-engine/bazel-testlogs
+aegis-data-plane/aegis-engine/bazel-aegis-engine
 dump.*
 bazel-bin
 bazel-out

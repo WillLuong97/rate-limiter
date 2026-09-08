@@ -1,0 +1,157 @@
+# ------ Envoy static bootstrap configuration ---------
+# This config sets up Envoy as an API gateway that:
+# 1. Listen for all incoming HTTP requests on port 8080
+# 2. Calls Aegis Engine via GRPC call for every request for rate limiting check
+# 3. Routes allowed requests to the backend port on 9090
+# 4. Return HTTP 429 for denied requests OVER_LIMIT from Aegis
+
+admin:
+# Envoy admin panel - useful for checking stats, config and health of the Envoy gateway
+# Access at http://localhost:9901
+  address:
+    socket_address:
+      address: 0.0.0.0
+      port_value: 9901
+
+
+static_resources:
+
+  #--Listeners defines where Envoy accepts an incoming traffic
+  listeners:
+    - name: listener_0
+      address:
+        socket_address:
+          address: 0.0.0.0
+          port_value: 8080 #Listen for all incoming HTTP requests on port 8080
+
+      filter_chains:
+        - filters:
+          - name: envoy.filters.network.http_connection_manager
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+              stat_prefix: ingress_http
+              access_log:
+                - name: envoy.access_loggers.stdout
+                  typed_config:
+                    "@type": type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog
+
+              # ── HTTP Filter Chain ────────────────────────────────────────
+              # Filters are applied in ORDER to every request.
+              # The rate limit filter runs BEFORE the router filter,
+              # so denied requests never reach the backend.
+              http_filters:
+                # ── Filter 1: Rate Limit ─────────────────────────────────
+                # Calls Aegis Engine via gRPC before routing any request.
+                # If Aegis returns OVER_LIMIT, Envoy returns 429 immediately.
+                # If Aegis is unreachable, failure_mode_deny controls behaviour.
+                - name: envoy.filters.http.ratelimit
+                  typed_config:
+                    "@type": type.googleapis.com/envoy.extensions.filters.http.ratelimit.v3.RateLimit
+                    domain: api_gateway # must match what grpc_server.cpp reads from request->domain()
+                    request_type: external #  # use external RLS (Aegis Engine)
+                    timeout: 0.25s         # if Aegis doesn't respond in 250ms, apply failure_mode_deny
+                    failure_mode_deny: false  # false = fail open (allow requests if Aegis is down); true  = fail closed (deny all if Aegis is down)
+
+                    rate_limit_service:
+                      grpc_service:
+                        envoy_grpc:
+                          cluster_name: aegis_engine_cluster # defined in clusters below
+                      transport_api_version: V3
+
+                # ── Filter 2: Router ─────────────────────────────────────
+                # Routes allowed requests to the backend.
+                # Must always be the LAST filter in the chain.
+                - name: envoy.filters.http.router
+                  typed_config:
+                    "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+
+              # ── Route Configuration: tell Envoy how and when to apply the filters defined above ──────────────────────────────────────
+              route_config:
+                name: local_route
+                virtual_hosts:
+                  - name: backend
+                    domains: ["*"] # match all incoming request hostnames
+
+                    # ---- Rate Limiter descriptor
+                    # This tells Envoy WHAT to send to Aegis Engine in the
+                    # gRPC ShouldRateLimit() call.
+                    #
+                    # remote_address: {} extracts the client's IP and sends:
+                    #   descriptors {
+                    #       entries {
+                    #           key:   "remote_address"
+                    #           value: "203.0.113.42"
+                    #       }
+                    #   }
+                    #
+                    # This is what grpc_server.cpp's extract_ip() reads.
+                    rate_limits:
+                      - actions:
+                        - remote_address: {} #This is empty means that Envoy will send all source IP of the incoming requests to Aegis
+
+                    routes:
+                    # Route 1: API Endpoints:
+                    - match:
+                        prefix: "/api/"
+                      route:
+                        cluster: backend_cluster
+                        timeout: 30s
+                    # ── Route 2: Health check (bypass rate limiting) ─────
+                    # The /health endpoint is excluded from rate limiting
+                    # by not including rate_limits actions on this route.
+                    - match:
+                        prefix: "/health"
+                      route:
+                        cluster: backend_cluster
+                        timeout: 5s
+                    # ── Route 3: Catch-all ───────────────────────────────
+                    - match:
+                        prefix: "/"
+                      route:
+                        cluster: backend_cluster
+                        timeout: 30s
+
+
+  # ── Clusters ────────────────────────────────────────────────────────────────
+  # Clusters define the upstream services Envoy can forward requests to.
+  # In this case, Envoy will route to Aegis first, and rate limiting goes through, then the Envoy will route it to the actual backend
+  # Envoy maintains a connection pool to each cluster automatically.
+  clusters:
+    # ── Cluster 1: Aegis Engine (gRPC rate limiter) ──────────────────────────
+    # This is the cluster the rate limit filter calls for every request.
+    # Must use HTTP/2 because gRPC requires it.
+    - name: aegis_engine_cluster
+      type: STRICT_DNS # resolve hostname via DNS on each connect
+      connect_timeout: 1s
+      typed_extension_protocol_options:
+        envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+          "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+          explicit_http_config:
+            http2_protocol_options: {}   # gRPC REQUIRES HTTP/2 — do not remove
+      load_assignment:
+        cluster_name: aegis_engine_cluster
+        endpoints:
+          - lb_endpoints:
+            - endpoint:
+                address:
+                  socket_address:
+                    address: aegis_engine # Docker service name — resolves via Docker DNS
+                    port_value: 8081      # Aegis gRPC port
+
+
+    # ── Cluster 2: Backend service  ──────────────────────────
+    # This is where allowed request are forwarded to
+    # Uses http/1.1 by default - change to http2_protocol_options if your
+    # backend speaks gRPC or HTTP/2
+    - name: backend_cluster
+      type: STRICT_DNS
+      connect_timeout: 5s
+      load_assignment:
+        cluster_name: backend_cluster
+        endpoints:
+          - lb_endpoints:
+               - endpoint:
+                  address:
+                    socket_address:
+                      address: backend #Docker service name for the backend service
+                      port_value: 9090
