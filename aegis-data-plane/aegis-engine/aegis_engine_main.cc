@@ -5,6 +5,7 @@
  #include <grpcpp/grpcpp.h>
 #include "aegis-server/aegis_grpc_server.h"
 #include <iostream>
+#include "config-providers.h"
 
 #include <thread>
 namespace po = boost::program_options;
@@ -26,6 +27,10 @@ bool runAegisEngine(RateLimiter& limiter) {
 
 int main(int argc, char * argv[])
 {
+
+   ConfigProvider configProvider;  
+   configProvider.warm_up(); 
+
    std::cout << std::unitbuf;   // force cout to flush after every insertion
 
    //todo: If you want genuine multi-seed startup resilience later, 
@@ -33,8 +38,7 @@ int main(int argc, char * argv[])
   const std::string cluster_nodes = "tcp://172.20.0.11:6379"; 
 
    RateLimitServiceImpl service(
-      100,    // capacity:    100 tokens per IP
-      10,      // refill_rate: 10 tokens per second
+      configProvider,
       cluster_nodes
    ); 
    
