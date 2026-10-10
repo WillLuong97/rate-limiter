@@ -3,13 +3,24 @@ load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library", "cc_test")
 # ─Core Aegis rate limiting library───────────────────────────────────────────────────────
 cc_library(
     name = "rate_limiting_lib",
-    srcs = ["rate-limiting-algorithm/token_bucket.cc"],
+    srcs = ["rate-limiting-algorithm/token_bucket.cc",  
+            "rate-limiting-algorithm/sliding_window.cc"],
     hdrs = ["rate-limiting-algorithm/rate_limiter.h",
-            "rate-limiting-algorithm/token_bucket.h"],
+            "rate-limiting-algorithm/token_bucket.h", 
+            "rate-limiting-algorithm/sliding_window.h"],
     deps = [
         "@redis_plus_plus//:redis++", # redis-plus-plus RedisCluster 
         "@hiredis//:hiredis", # underlying hiredis (redis-plus-plus needs it)
         ],
+    copts = ["-std=c++17"],
+    visibility = ["//visibility:public"],
+)
+
+# Config provider library phase 1 (Phase 1: in-memory map, Phase 2: LRU + DynamoDB) -----------
+cc_library(
+    name = "config_provider_lib", 
+    srcs = ["providers/config-providers.cc"], 
+    hdrs = ["providers/config-providers.h"],
     copts = ["-std=c++17"],
     visibility = ["//visibility:public"],
 )
@@ -20,7 +31,8 @@ cc_library(
     srcs = ["aegis-server/aegis_grpc_server.cpp"],
     hdrs = ["aegis-server/aegis_grpc_server.h"],
     deps = [
-        ":rate_limiting_lib", 
+        ":rate_limiting_lib",
+        ":config_provider_lib",
         "//aegis-server/grpc-proto:rls_cc_grpc",            
         "@grpc//:grpc++",                       # grpc::Status, grpc::ServerContext
         "@grpc//:grpc++_reflection",            # optional: enables grpc_cli inspection
@@ -33,7 +45,8 @@ cc_binary(
     srcs = ["aegis_engine_main.cc"],
     deps = [
         "@boost.program_options",
-        ":rate_limiting_lib", 
+        ":rate_limiting_lib",
+        ":config_provider_lib",
         ":aegis_grpc_server_lib"
     ],
     copts = ["-std=c++17"],

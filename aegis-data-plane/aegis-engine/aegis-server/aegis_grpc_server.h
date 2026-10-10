@@ -11,6 +11,8 @@
 #include "rate-limiting-algorithm/rate_limiter.h"
 #include "rate-limiting-algorithm/token_bucket.h"
 
+#include "rate-limiting-algorithm/sliding_window.h"
+
 #include <unordered_map>
 #include <memory>
 #include <mutex>
@@ -60,7 +62,7 @@ class RateLimitServiceImpl final : public RateLimitService::Service {
     ConfigProvider& config_provider_;               // holds algorithm, capacity, rate per rule
     std::string cluster_nodes_; 
 
-    //One token bucket per IP address: 
+    // One token bucket per IP address: 
     std::unordered_map<std::string, std::unique_ptr<RateLimiter>> limiters_; 
     std::mutex limiter_mutex;   
 };

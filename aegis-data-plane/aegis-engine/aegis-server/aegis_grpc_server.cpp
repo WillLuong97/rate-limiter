@@ -171,13 +171,13 @@ RateLimiter* RateLimitServiceImpl::get_or_create_limiter(const std::string bucke
                 cluster_nodes_
             );
         } catch (const std::exception& e) {
-            std::cerr << "[get_or_create_limiter] TokenBucket construction failed: "
+            std::cerr << "[get_or_create_limiter] Sliding Window construction failed: "
                        << e.what() << "\n";
             throw;   // re-throw so behavior is unchanged — this just logs before it escapes
         } 
     } else {
         std::cerr << "[aegis_grpc_server] Unsupported rate limiter algorithm for: " << bucket_key << "\n"; 
-        throw; 
+        throw std::invalid_argument("Unsupported algorithm"); 
     }
 
     return limiters_[bucket_key].get(); 
@@ -185,7 +185,7 @@ RateLimiter* RateLimitServiceImpl::get_or_create_limiter(const std::string bucke
 
 //Helper method to find the config key for aegis from the hardcoded config map 
 std::string RateLimitServiceImpl::resolve_rule_key_from_request(const RateLimitRequest* request) {
-        // Phase 1: always use the generic "ip" rule
+    // Phase 1: always use the generic "ip" rule
     // Phase 2: extract endpoint path from request descriptors and
     //          return "login", "payment", "export" etc. so ConfigProvider
     //          can return the right algorithm per endpoint

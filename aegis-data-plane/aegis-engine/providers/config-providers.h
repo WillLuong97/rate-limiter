@@ -33,11 +33,11 @@ class ConfigProvider {
 
         // Phase 2: pre-warm cache from DynamoDB at startup
         // No-op for now — just logs a message
-        void warm_up() {}
+        void warm_up();
 
         // Phase 2: refresh stale entries from DynamoDB
         // No-op for now — just logs a message
-        void refresh() {} 
+        void refresh(); 
 
     private:
         // Phase 1: simple in-memory map — replaced by LRU cache in Phase 2

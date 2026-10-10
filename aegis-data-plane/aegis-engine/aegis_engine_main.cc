@@ -5,7 +5,7 @@
  #include <grpcpp/grpcpp.h>
 #include "aegis-server/aegis_grpc_server.h"
 #include <iostream>
-#include "config-providers.h"
+#include "providers/config-providers.h"
 
 #include <thread>
 namespace po = boost::program_options;
