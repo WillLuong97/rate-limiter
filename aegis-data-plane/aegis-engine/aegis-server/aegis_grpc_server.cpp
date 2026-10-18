@@ -110,7 +110,7 @@ std::string RateLimitServiceImpl::extract_ip(const RateLimitRequest* request) {
 
 //Helper method to call a rate limiter algorithm and perform rate limting on the request IP 
 RateLimiter* RateLimitServiceImpl::get_or_create_limiter(const std::string bucket_key, const std::string rule_key) {  
-    //put a lock on the current rate limiting thread 
+    //put a lock on the current rate limiting thread, RAII 
     std::lock_guard<std::mutex> lock(limiter_mutex); 
     
     //return existing rate limiters if one is already created 
@@ -144,42 +144,29 @@ RateLimiter* RateLimitServiceImpl::get_or_create_limiter(const std::string bucke
               << " | capacity: "  << config->capacity
               << " | rate: "      << config->refill_rate << "\n";
 
-
-    if (config->algorithm == RateLimitConfig::TOKEN_BUCKET) {
-        try {
-            //A token bucket currently does not exist for the current key, starting a new ones 
-            std::cout << "Info: Creating a new token bucket for key: " << bucket_key << "\n"; 
-            limiters_[bucket_key] = std::make_unique<TokenBucket>(
-                bucket_key,
-                config->capacity, 
-                config->refill_rate,
-                cluster_nodes_
-            );
-        } catch (const std::exception& e) {
-            std::cerr << "[get_or_create_limiter] TokenBucket construction failed: "
-                       << e.what() << "\n";
-            throw;   // re-throw so behavior is unchanged — this just logs before it escapes
+    //This store the rate limiting algorithm name to the class implementation of that algorithm
+    static const unordered_map<
+        RateLimitConfig::RateLimitAlgorithm, 
+        std::function<std::unique_ptr<RateLimiter>(const std::string&, int, int, const string&)> algorithm_factory = {
+            {
+                RateLimitConfig::TOKEN_BUCKET, [](auto& key, auto capacity, auto refill_rate, auto& cluster_uri) {
+                    return std::make_unique<TokenBucket>(key, capacity, refill_rate, cluster_uri)
+                }
+            }, 
+            {  
+                RateLimitConfig::SlidingWindow, [](auto& key, auto capacity, auto refill_rate, auto& cluster_uri) {
+                    return std::make_unique<SlidingWindow>(key, capacity, refill_rate, cluster_uri)
+                }
+            }
         }
-    } else if (config->algorithm == RateLimitConfig::SLIDING_WINDOW) {
-        try {
-            //A token bucket currently does not exist for the current key, starting a new ones 
-            std::cout << "Info: Creating a sliding window supported rate limiter for: " << bucket_key << "\n"; 
-            limiters_[bucket_key] = std::make_unique<SlidingWindow>( //TODO: add sliding window implementation here
-                bucket_key,
-                config->capacity, 
-                config->refill_rate,
-                cluster_nodes_
-            );
-        } catch (const std::exception& e) {
-            std::cerr << "[get_or_create_limiter] Sliding Window construction failed: "
-                       << e.what() << "\n";
-            throw;   // re-throw so behavior is unchanged — this just logs before it escapes
-        } 
-    } else {
-        std::cerr << "[aegis_grpc_server] Unsupported rate limiter algorithm for: " << bucket_key << "\n"; 
-        throw std::invalid_argument("Unsupported algorithm"); 
-    }
 
+    auto it = algorithm_factory.find(config->algorithm)
+    
+    if (it == algorithm_factory.end()) {
+        throw std::invalid_argument("Unsupported Algorithm")
+    }
+    
+    limiters_[bucket_key] = it->second(bucket_key, config->capacity, config->refill_rate, cluster_nodes_)
     return limiters_[bucket_key].get(); 
 }
 
