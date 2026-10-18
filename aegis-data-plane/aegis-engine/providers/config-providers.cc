@@ -38,8 +38,8 @@ ConfigProvider::ConfigProvider() {
 
 
 optional<RateLimitConfig> ConfigProvider::get_config(const string& key) {
-    std::lock_guard<mutex> lock(mutex_); 
-
+    // RAII class: mutex acquisition is initialization, we bind the lock to the lifecycle of this function, and open the lock after the function is finished
+    std::lock_guard<mutex> lock(mutex_);  
 
     //For phase 1, we are just reading the config straight from the hard coded config map above 
     //With phase 2, we will read these results from config agent from DynamoDB database 
