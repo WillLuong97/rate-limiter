@@ -13,6 +13,7 @@
 
 #include "rate-limiting-algorithm/sliding_window.h"
 
+#include <functional>
 #include <unordered_map>
 #include <memory>
 #include <mutex>
@@ -47,7 +48,7 @@ class RateLimitServiceImpl final : public RateLimitService::Service {
     std::string extract_ip(const RateLimitRequest* request); 
 
     // Build the Redis key from the IP address
-    std::string build_bucket_key_from_ip(const std::string& ip);
+    std::string build_bucket_key_from_ip(const std::string& ip, const std::string& config_key);
 
     // ── Rule key resolution ───────────────────────────────────────────────────
     // Determines which ConfigProvider rule key applies to this request.

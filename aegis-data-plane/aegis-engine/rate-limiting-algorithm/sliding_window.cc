@@ -18,17 +18,7 @@ SlidingWindow::SlidingWindow(
     }
 }
 
-bool SlidingWindow::consume(int consumed_token){ 
-    //Todo: implement the sliding window algorithm here
-    return true; 
-}  
-
-void SlidingWindow::consume_blocking(int consumed_token) {
-    //Todo: Implement the sliding window logics for consume_blocking here
-}  
-
-// Returns the current number of available tokens.
-int SlidingWindow::available() {
-    //Placeholders for now, but still need to implement the sliding window logics here
-    return -1; 
+//Todo: implement the sliding window algorithm here
+RateLimitDecision SlidingWindow::consume(int consumed_token){ 
+    return {true, -1, 0}; //Placeholders
 }

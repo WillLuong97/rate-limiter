@@ -12,19 +12,6 @@ namespace po = boost::program_options;
 
 using namespace std;
 
-
-bool runAegisEngine(RateLimiter& limiter) {
-
-   // If there is enough token, the request will be allowed through, otherwise, we will not allow it to go through
-   if (limiter.available() <= 0) {
-      cout << "No available tokens to complete the request " << endl;
-      return false;
-   } else {
-      cout << "Available tokens: " << limiter.available() << " allowing request to through" << endl;
-      return limiter.consume();   
-   };
-}
-
 int main(int argc, char * argv[])
 {
 
@@ -51,7 +38,15 @@ int main(int argc, char * argv[])
    );
    builder.RegisterService(&service);
 
-   unique_ptr<grpc::Server> server(builder.BuildAndStart()); 
+   unique_ptr<grpc::Server> server(builder.BuildAndStart());
+
+   //If the server is not able to start, then we would get a nullpointer back and crash the program
+   //if so, log the error and exit the program
+   if (!server) {
+      cerr << "[aegis-main] Unable to start up gRPC server on port :8081 (port in use?) \n"; 
+      return -1; 
+   }
+
    cout << "[aegis-main] Aegis Engine listening on :8081\n"; 
    server->Wait(); 
    return 0; 

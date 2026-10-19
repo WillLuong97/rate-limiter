@@ -4,13 +4,14 @@
 
 //Alias for for Envoy response code 
 using Code = envoy::service::ratelimit::v3::RateLimitResponse::Code;
+using LimiterFactory = std::function<std::unique_ptr<RateLimiter>(const std::string&, int, int, const std::string&)>;
 
 //Constructor 
 RateLimitServiceImpl::RateLimitServiceImpl(
     ConfigProvider& config_provider,
     const std::string& cluster_nodes) 
-      : cluster_nodes_(cluster_nodes),
-        config_provider_(config_provider)
+      : config_provider_(config_provider),
+        cluster_nodes_(cluster_nodes)
 {}
 
 
@@ -40,40 +41,40 @@ grpc::Status RateLimitServiceImpl::ShouldRateLimit(
 
     std::cout << "INFO: IP address found! Begin rate limiting...";
 
-    //Construct a key for the rate limiter bucket 
-    std::string bucket_key  = build_bucket_key_from_ip(incoming_ip);
-    std::string rule_key = resolve_rule_key_from_request(request); 
+    //Construct a key for the rate limiter bucket
+    std::string config_key = resolve_rule_key_from_request(request); 
+    std::string bucket_key  = build_bucket_key_from_ip(incoming_ip, config_key);
+    
 
     //The limiter will be a pointer to a specific rate limiter class 
-    RateLimiter* limiter = get_or_create_limiter(bucket_key, rule_key);
+    RateLimiter* limiter = get_or_create_limiter(bucket_key, config_key);
 
-    if (limiter->consume()) {
+    //The final decision after the applying rate limiting logic on the current request
+    RateLimitDecision decision = limiter->consume();
+
+    if (decision.remaining >= 0) {
+        auto* remaining_header = response->add_response_headers_to_add(); 
+        remaining_header->set_key("X-RateLimit-Remaining"); 
+        remaining_header->set_value(std::to_string(decision.remaining));
+    }
+
+    if (decision.allowed) {
         response->set_overall_code(RateLimitResponse::OK);
-        std::cout << "Info: Token for IP " 
-                 << incoming_ip 
-                 << " still available with " 
-                 << limiter->available() 
-                 << " tokens left, allowing through!\n"; 
+        std::cout << "Info: Token for IP "
+                 << incoming_ip
+                 << " is available, allowing through!\n";
     } else {
         response->set_overall_code(RateLimitResponse::OVER_LIMIT);  
         std::cerr << "Error: Rate Limit Exceeded! "
                   << "Token for IP " 
-                  << incoming_ip 
-                  << " is no longer with " 
-                  << limiter->available() 
-                  << " tokens left, blocking access \n";  
+                  << incoming_ip
+                  << " is no longer available, blocking access \n";
         
         //Set header to 429, too many requests back to Envoy to let them know that the request has exceeded 
         //And let the client to retry. Envoy injects this header automatically.
-        auto* header = response->add_response_headers_to_add(); 
-        header->set_key("X-RateLimit-RetryAfter"); 
-        header->set_value("5"); // retry after 5 second 
-
-
-        //Add an additional header to let the customer know their current rate limit token count 
-        auto* additional_header = response->add_response_headers_to_add(); 
-       additional_header->set_key("X-RateLimit-Remaining"); 
-       additional_header->set_value("0"); 
+        auto* retry_header = response->add_response_headers_to_add(); 
+        retry_header->set_key("X-RateLimit-RetryAfter"); 
+        retry_header->set_value(std::to_string(decision.retry_after_seconds));
     }
 
     return grpc::Status::OK;
@@ -83,8 +84,8 @@ grpc::Status RateLimitServiceImpl::ShouldRateLimit(
 //Private helpers 
 
 //Build a redis key for the token bucket 
-std::string RateLimitServiceImpl::build_bucket_key_from_ip(const std::string& ip) {
-    return "ip:" + ip + ":tokens"; 
+std::string RateLimitServiceImpl::build_bucket_key_from_ip(const std::string& ip, const std::string& config_key) {
+    return "ip:" + ip + ":" + config_key; 
 }
 
 
@@ -116,8 +117,8 @@ RateLimiter* RateLimitServiceImpl::get_or_create_limiter(const std::string bucke
     //return existing rate limiters if one is already created 
     auto it = limiters_.find(bucket_key); 
     if (it != limiters_.end()) {
-        return limiters_[bucket_key].get();
-    }; 
+        return it->second.get();
+    }
 
 
     // ── Ask ConfigProvider for this rule's config ─────────────────────────────
@@ -147,42 +148,37 @@ RateLimiter* RateLimitServiceImpl::get_or_create_limiter(const std::string bucke
     //This store the rate limiting algorithm name to the class implementation of that algorithm
     static const unordered_map<
         RateLimitConfig::RateLimitAlgorithm, 
-        std::function<std::unique_ptr<RateLimiter>(const std::string&, int, int, const string&)> algorithm_factory = {
+        LimiterFactory> algorithm_factory = {
             {
                 RateLimitConfig::TOKEN_BUCKET, [](auto& key, auto capacity, auto refill_rate, auto& cluster_uri) {
-                    return std::make_unique<TokenBucket>(key, capacity, refill_rate, cluster_uri)
+                    return std::make_unique<TokenBucket>(key, capacity, refill_rate, cluster_uri);
                 }
             }, 
             {  
-                RateLimitConfig::SlidingWindow, [](auto& key, auto capacity, auto refill_rate, auto& cluster_uri) {
-                    return std::make_unique<SlidingWindow>(key, capacity, refill_rate, cluster_uri)
+                RateLimitConfig::SLIDING_WINDOW, [](auto& key, auto capacity, auto refill_rate, auto& cluster_uri) {
+                    return std::make_unique<SlidingWindow>(key, capacity, refill_rate, cluster_uri);
                 }
             }
-        }
+        };
 
-    auto it = algorithm_factory.find(config->algorithm)
+    auto algorithm_it = algorithm_factory.find(config->algorithm);
     
-    if (it == algorithm_factory.end()) {
-        throw std::invalid_argument("Unsupported Algorithm")
+    if (algorithm_it == algorithm_factory.end()) {
+        throw std::invalid_argument("Unsupported Algorithm");
     }
     
-    limiters_[bucket_key] = it->second(bucket_key, config->capacity, config->refill_rate, cluster_nodes_)
+    limiters_[bucket_key] = algorithm_it->second(bucket_key, config->capacity, config->refill_rate, cluster_nodes_);
     return limiters_[bucket_key].get(); 
 }
 
 //Helper method to find the config key for aegis from the hardcoded config map 
 std::string RateLimitServiceImpl::resolve_rule_key_from_request(const RateLimitRequest* request) {
-    // Phase 1: always use the generic "ip" rule
-    // Phase 2: extract endpoint path from request descriptors and
-    //          return "login", "payment", "export" etc. so ConfigProvider
-    //          can return the right algorithm per endpoint
-    //
-    // e.g. Phase 2 logic:
-    //   for (const auto& descriptor : request->descriptors())
-    //       for (const auto& entry : descriptor.entries())
-    //           if (entry.key() == "path") {
-    //               if (entry.value() == "/api/login")   return "login";
-    //               if (entry.value() == "/api/payment") return "payment";
-    //           }
-    return "ip"; 
+    for(const auto& descriptor : request->descriptors()) {
+        for (const auto& entry: descriptor.entries()) {
+            if (entry.key() == "request_type") {
+                return entry.value(); 
+            }
+        }
+    }
+    return "default"; 
 }
