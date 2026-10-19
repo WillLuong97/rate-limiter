@@ -1,5 +1,7 @@
 #include "token_bucket.h"
 
+#include <vector> 
+#include <iterator> 
 #include <iostream>
 
 // -----------------------------------------------------------------------------
@@ -29,31 +31,46 @@ TokenBucket::TokenBucket(const string& key,
 // -----------------------------------------------------------------------------
 // Token bucket interface implementation 
 // -----------------------------------------------------------------------------
-bool TokenBucket::consume(int tokens) {
-    //Todo: Add specific token consumption states of token consumption here to let us know whether the token is being allowed, denied or unable to consume it. We should add enums such as, ALLOWED, DENIED, ERROR
+RateLimitDecision TokenBucket::consume(int tokens) {
     return execute_token_consumption_script(tokens); 
 }
 
 // -----------------------------------------------------------------------------
 // Private helpers
 // -----------------------------------------------------------------------------
-bool TokenBucket::execute_token_consumption_script(int token_requested) {
+RateLimitDecision TokenBucket::execute_token_consumption_script(int token_requested) {
     std::lock_guard<std::mutex> lock(mutex_);
 
     try {
-        long long result = cluster_.eval<long long> (
+        vector<long long> results;
+        cluster_.eval(
             CONSUME_SCRIPT, 
             { key_ }, 
             {
                 to_string(capacity_),
                 to_string(refill_rate_), 
                 to_string(token_requested)
-            }
+            },
+            back_inserter(results) 
         ); 
-        return result == 0; //redis script returned status code 0
+
+        //base case: if the response comes back and does not have the same format
+        if (results.size() != 3) {
+            cerr << "[token_bucket]  Unexpected script reply size: " << results.size()
+            << " ----failing open\n"; 
+            return {true, -1, 0};
+        } 
+
+        return {
+            results[0] == 1,
+            static_cast<int>(results[1]), 
+            static_cast<int>(results[2])
+
+        }; 
+
     } catch (const sw::redis::Error & e) {
         cerr << "[token_bucket] Redis cluster error: " << e.what()
             << " --failing open\n"; 
-        return true; //Fail open, report the error but still let the request to go through
+        return {true, -1, 0}; //Fail open, report the error but still let the request to go through
     }
 }; 

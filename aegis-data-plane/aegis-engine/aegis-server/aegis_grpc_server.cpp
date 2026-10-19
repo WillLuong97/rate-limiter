@@ -48,7 +48,16 @@ grpc::Status RateLimitServiceImpl::ShouldRateLimit(
     //The limiter will be a pointer to a specific rate limiter class 
     RateLimiter* limiter = get_or_create_limiter(bucket_key, rule_key);
 
-    if (limiter->consume()) {
+    //The final decision after the applyin rate limiting logic on the current request
+    RateLimitDecision decision = limiter->consume();
+
+    if (decision.remaining >= 0) {
+        auto* remaining_header = response->add_response_headers_to_add(); 
+        remaining_header->set_key("X-RateLimit-Remaining"); 
+        remaining_header->set_value(std::to_string(decision.remaining));
+    }
+
+    if (decision.allowed) {
         response->set_overall_code(RateLimitResponse::OK);
         std::cout << "Info: Token for IP "
                  << incoming_ip
@@ -62,15 +71,9 @@ grpc::Status RateLimitServiceImpl::ShouldRateLimit(
         
         //Set header to 429, too many requests back to Envoy to let them know that the request has exceeded 
         //And let the client to retry. Envoy injects this header automatically.
-        auto* header = response->add_response_headers_to_add(); 
-        header->set_key("X-RateLimit-RetryAfter"); 
-        header->set_value("5"); // retry after 5 second 
-
-
-        //Add an additional header to let the customer know their current rate limit token count 
-        auto* additional_header = response->add_response_headers_to_add(); 
-       additional_header->set_key("X-RateLimit-Remaining"); 
-       additional_header->set_value("0"); 
+        auto* retry_header = response->add_response_headers_to_add(); 
+        retry_header->set_key("X-RateLimit-RetryAfter"); 
+        retry_header->set_value(std::to_string(decision.retry_after_seconds));
     }
 
     return grpc::Status::OK;

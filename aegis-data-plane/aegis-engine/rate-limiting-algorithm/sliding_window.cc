@@ -18,7 +18,7 @@ SlidingWindow::SlidingWindow(
     }
 }
 
-bool SlidingWindow::consume(int consumed_token){ 
-    //Todo: implement the sliding window algorithm here
-    return true; 
+//Todo: implement the sliding window algorithm here
+RateLimitDecision SlidingWindow::consume(int consumed_token){ 
+    return {true, -1, 0}; //Placeholders
 }

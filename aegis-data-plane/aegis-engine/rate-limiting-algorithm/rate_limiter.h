@@ -1,4 +1,11 @@
 # pragma once 
+
+struct RateLimitDecision {
+    bool allowed; 
+    int remaining; 
+    int retry_after_seconds; 
+}; 
+
 /**
  * The abstract base RateLimiter class that can be extended to different rate limiting algorithm implementation 
  * ***/
@@ -6,6 +13,6 @@ class RateLimiter {
 public:
     virtual ~RateLimiter() = default;
 
-    // Returns true if the request is allowed, false if rate limited
-    virtual bool consume(int tokens = 1) = 0;
+    //Returns whether the request is allowed, plus remaining tokens and retry-after seconds.
+    virtual RateLimitDecision consume(int tokens = 1) = 0;
 };
