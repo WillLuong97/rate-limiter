@@ -19,12 +19,7 @@ class SlidingWindow : public RateLimiter {
 
         // Attempt to consume `tokens` tokens.
         // Returns true if successful, false if not enough tokens.
-        bool consume(int consumed_token = 1) override; 
-
-        void consume_blocking(int consumed_token = 1) override; 
-
-        // Returns the current number of available tokens.
-        int available() override; 
+        bool consume(int consumed_token = 1) override;
 
     private:
         // ── Private class members ──────────────────────────────────────────────────────

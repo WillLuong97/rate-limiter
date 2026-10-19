@@ -12,19 +12,6 @@ namespace po = boost::program_options;
 
 using namespace std;
 
-
-bool runAegisEngine(RateLimiter& limiter) {
-
-   // If there is enough token, the request will be allowed through, otherwise, we will not allow it to go through
-   if (limiter.available() <= 0) {
-      cout << "No available tokens to complete the request " << endl;
-      return false;
-   } else {
-      cout << "Available tokens: " << limiter.available() << " allowing request to through" << endl;
-      return limiter.consume();   
-   };
-}
-
 int main(int argc, char * argv[])
 {
 

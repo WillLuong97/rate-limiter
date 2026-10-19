@@ -103,8 +103,6 @@ All rate limiting algorithms implement the `RateLimiter` abstract base class, al
 class RateLimiter {
 public:
     virtual bool   consume(double tokens = 1.0)          = 0;
-    virtual void   consume_blocking(double tokens = 1.0) = 0;
-    virtual double available()                           = 0;
     virtual ~RateLimiter() = default;
 };
 ```
@@ -510,8 +508,6 @@ docker compose up -d --build
 | Polymorphism | `TokenBucket` usable as `RateLimiter` base class pointer — abstract interface |
 | `consume()` | Allow/deny logic, token deduction, multi-token requests |
 | Refill | Tokens refill over time via Lua elapsed time calculation, capped at capacity |
-| `consume_blocking()` | Blocks when empty, returns immediately when tokens available |
-| `available()` | Returns correct count including unwritten refill, never exceeds capacity |
 | Thread Safety | Concurrent consumers across multiple threads never exceed capacity |
 | Cluster Failover | Fail-open behaviour when Redis cluster node is temporarily unreachable |
 

@@ -34,13 +34,7 @@ public:
 
     // Attempt to consume `tokens` tokens.
     // Returns true if successful, false if not enough tokens.
-    bool consume(int consumed_token = 1) override; 
-
-    void consume_blocking(int consumed_token = 1) override; 
-
-    // Returns the current number of available tokens.
-    int available() override; 
-
+    bool consume(int consumed_token = 1) override;
 
 private:
     // ── Redis operations ──────────────────────────────────────────────────────
@@ -71,7 +65,6 @@ private:
     // ARGV[1]  = capacity             e.g. 100
     // ARGV[2]  = refill_rate          e.g. 10
     // ARGV[3]  = tokens_requested     e.g. 1
-    // ARGV[4]  = current unix time    e.g. 1717000000.123
     //
     // Returns: 0 if allowed, 1 if denied
     static constexpr const char* CONSUME_SCRIPT = R"(
@@ -79,7 +72,11 @@ private:
         local capacity = tonumber(ARGV[1])
         local refill_rate = tonumber(ARGV[2])
         local token_req = tonumber(ARGV[3])
-        local now = tonumber(ARGV[4])
+
+        -- ── Step 0: Read current time from the Redis server ────────────────────────────
+        -- TIME returns {unix_seconds, microseconds} as strings
+        local t = redis.call('TIME')
+        local now = tonumber(t[1]) + tonumber(t[2]) / 1000000
 
         -- ── Step 1: Read current state from Redis ────────────────────────────
         -- HGET returns nil if the key doesn't exist yet (first request from IP)

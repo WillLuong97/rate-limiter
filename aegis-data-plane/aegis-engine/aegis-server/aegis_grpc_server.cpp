@@ -4,13 +4,14 @@
 
 //Alias for for Envoy response code 
 using Code = envoy::service::ratelimit::v3::RateLimitResponse::Code;
+using LimiterFactory = std::function<std::unique_ptr<RateLimiter>(const std::string&, int, int, const std::string&)>;
 
 //Constructor 
 RateLimitServiceImpl::RateLimitServiceImpl(
     ConfigProvider& config_provider,
     const std::string& cluster_nodes) 
-      : cluster_nodes_(cluster_nodes),
-        config_provider_(config_provider)
+      : config_provider_(config_provider),
+        cluster_nodes_(cluster_nodes)
 {}
 
 
@@ -49,19 +50,15 @@ grpc::Status RateLimitServiceImpl::ShouldRateLimit(
 
     if (limiter->consume()) {
         response->set_overall_code(RateLimitResponse::OK);
-        std::cout << "Info: Token for IP " 
-                 << incoming_ip 
-                 << " still available with " 
-                 << limiter->available() 
-                 << " tokens left, allowing through!\n"; 
+        std::cout << "Info: Token for IP "
+                 << incoming_ip
+                 << " is available, allowing through!\n";
     } else {
         response->set_overall_code(RateLimitResponse::OVER_LIMIT);  
         std::cerr << "Error: Rate Limit Exceeded! "
                   << "Token for IP " 
-                  << incoming_ip 
-                  << " is no longer with " 
-                  << limiter->available() 
-                  << " tokens left, blocking access \n";  
+                  << incoming_ip
+                  << " is no longer available, blocking access \n";
         
         //Set header to 429, too many requests back to Envoy to let them know that the request has exceeded 
         //And let the client to retry. Envoy injects this header automatically.
@@ -116,8 +113,8 @@ RateLimiter* RateLimitServiceImpl::get_or_create_limiter(const std::string bucke
     //return existing rate limiters if one is already created 
     auto it = limiters_.find(bucket_key); 
     if (it != limiters_.end()) {
-        return limiters_[bucket_key].get();
-    }; 
+        return it->second.get();
+    }
 
 
     // ── Ask ConfigProvider for this rule's config ─────────────────────────────
@@ -147,26 +144,26 @@ RateLimiter* RateLimitServiceImpl::get_or_create_limiter(const std::string bucke
     //This store the rate limiting algorithm name to the class implementation of that algorithm
     static const unordered_map<
         RateLimitConfig::RateLimitAlgorithm, 
-        std::function<std::unique_ptr<RateLimiter>(const std::string&, int, int, const string&)> algorithm_factory = {
+        LimiterFactory> algorithm_factory = {
             {
                 RateLimitConfig::TOKEN_BUCKET, [](auto& key, auto capacity, auto refill_rate, auto& cluster_uri) {
-                    return std::make_unique<TokenBucket>(key, capacity, refill_rate, cluster_uri)
+                    return std::make_unique<TokenBucket>(key, capacity, refill_rate, cluster_uri);
                 }
             }, 
             {  
-                RateLimitConfig::SlidingWindow, [](auto& key, auto capacity, auto refill_rate, auto& cluster_uri) {
-                    return std::make_unique<SlidingWindow>(key, capacity, refill_rate, cluster_uri)
+                RateLimitConfig::SLIDING_WINDOW, [](auto& key, auto capacity, auto refill_rate, auto& cluster_uri) {
+                    return std::make_unique<SlidingWindow>(key, capacity, refill_rate, cluster_uri);
                 }
             }
-        }
+        };
 
-    auto it = algorithm_factory.find(config->algorithm)
+    auto algorithm_it = algorithm_factory.find(config->algorithm);
     
-    if (it == algorithm_factory.end()) {
-        throw std::invalid_argument("Unsupported Algorithm")
+    if (algorithm_it == algorithm_factory.end()) {
+        throw std::invalid_argument("Unsupported Algorithm");
     }
     
-    limiters_[bucket_key] = it->second(bucket_key, config->capacity, config->refill_rate, cluster_nodes_)
+    limiters_[bucket_key] = algorithm_it->second(bucket_key, config->capacity, config->refill_rate, cluster_nodes_);
     return limiters_[bucket_key].get(); 
 }
 

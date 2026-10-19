@@ -13,6 +13,7 @@
 
 #include "rate-limiting-algorithm/sliding_window.h"
 
+#include <functional>
 #include <unordered_map>
 #include <memory>
 #include <mutex>
