@@ -48,7 +48,7 @@ grpc::Status RateLimitServiceImpl::ShouldRateLimit(
     //The limiter will be a pointer to a specific rate limiter class 
     RateLimiter* limiter = get_or_create_limiter(bucket_key, rule_key);
 
-    //The final decision after the applyin rate limiting logic on the current request
+    //The final decision after the applying rate limiting logic on the current request
     RateLimitDecision decision = limiter->consume();
 
     if (decision.remaining >= 0) {
