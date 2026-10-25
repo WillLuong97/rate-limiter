@@ -41,12 +41,13 @@ grpc::Status RateLimitServiceImpl::ShouldRateLimit(
 
     std::cout << "INFO: IP address found! Begin rate limiting...";
 
-    //Construct a key for the rate limiter bucket 
-    std::string bucket_key  = build_bucket_key_from_ip(incoming_ip);
-    std::string rule_key = resolve_rule_key_from_request(request); 
+    //Construct a key for the rate limiter bucket
+    std::string config_key = resolve_rule_key_from_request(request); 
+    std::string bucket_key  = build_bucket_key_from_ip(incoming_ip, config_key);
+    
 
     //The limiter will be a pointer to a specific rate limiter class 
-    RateLimiter* limiter = get_or_create_limiter(bucket_key, rule_key);
+    RateLimiter* limiter = get_or_create_limiter(bucket_key, config_key);
 
     //The final decision after the applying rate limiting logic on the current request
     RateLimitDecision decision = limiter->consume();
@@ -83,8 +84,8 @@ grpc::Status RateLimitServiceImpl::ShouldRateLimit(
 //Private helpers 
 
 //Build a redis key for the token bucket 
-std::string RateLimitServiceImpl::build_bucket_key_from_ip(const std::string& ip) {
-    return "ip:" + ip + ":tokens"; 
+std::string RateLimitServiceImpl::build_bucket_key_from_ip(const std::string& ip, const std::string& config_key) {
+    return "ip:" + ip + ":" + config_key; 
 }
 
 
@@ -172,17 +173,12 @@ RateLimiter* RateLimitServiceImpl::get_or_create_limiter(const std::string bucke
 
 //Helper method to find the config key for aegis from the hardcoded config map 
 std::string RateLimitServiceImpl::resolve_rule_key_from_request(const RateLimitRequest* request) {
-    // Phase 1: always use the generic "ip" rule
-    // Phase 2: extract endpoint path from request descriptors and
-    //          return "login", "payment", "export" etc. so ConfigProvider
-    //          can return the right algorithm per endpoint
-    //
-    // e.g. Phase 2 logic:
-    //   for (const auto& descriptor : request->descriptors())
-    //       for (const auto& entry : descriptor.entries())
-    //           if (entry.key() == "path") {
-    //               if (entry.value() == "/api/login")   return "login";
-    //               if (entry.value() == "/api/payment") return "payment";
-    //           }
-    return "ip"; 
+    for(const auto& descriptor : request->descriptors()) {
+        for (const auto& entry: descriptor.entries()) {
+            if (entry.key() == "request_type") {
+                return entry.value(); 
+            }
+        }
+    }
+    return "default"; 
 }

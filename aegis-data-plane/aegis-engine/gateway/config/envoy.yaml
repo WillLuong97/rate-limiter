@@ -30,6 +30,9 @@ static_resources:
             typed_config:
               "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
               stat_prefix: ingress_http
+              normalize_path: true # resolves /./ and /../ and decodes unreserved %-encoding 
+              merge_slashes: true  # //api//login becomes /api/login
+              path_with_escaped_slashes_action: UNESCAPE_AND_REDIRECT 
               access_log:
                 - name: envoy.access_loggers.stdout
                   typed_config:
@@ -71,46 +74,66 @@ static_resources:
                 virtual_hosts:
                   - name: backend
                     domains: ["*"] # match all incoming request hostnames
-
-                    # ---- Rate Limiter descriptor
-                    # This tells Envoy WHAT to send to Aegis Engine in the
-                    # gRPC ShouldRateLimit() call.
-                    #
-                    # remote_address: {} extracts the client's IP and sends:
-                    #   descriptors {
-                    #       entries {
-                    #           key:   "remote_address"
-                    #           value: "203.0.113.42"
-                    #       }
-                    #   }
-                    #
-                    # This is what grpc_server.cpp's extract_ip() reads.
-                    rate_limits:
-                      - actions:
-                        - remote_address: {} #This is empty means that Envoy will send all source IP of the incoming requests to Aegis
-
+                    
                     routes:
-                    # Route 1: API Endpoints:
+                    # Envoy does route matching on a first come first 
+                    # Route 1: Login endpoint:
                     - match:
-                        prefix: "/api/"
+                        path_separated_prefix: "/api/login"
                       route:
                         cluster: backend_cluster
                         timeout: 30s
-                    # ── Route 2: Health check (bypass rate limiting) ─────
+                        rate_limits:
+                          - actions: 
+                            - remote_address: {}
+                            - generic_key: 
+                                descriptor_key: request_type
+                                descriptor_value: login
+                    # Route 2: Payment Endpoints:
+                    - match:
+                        path_separated_prefix: "/api/payment"
+                      route:
+                        cluster: backend_cluster
+                        timeout: 30s
+                        rate_limits:
+                          - actions: 
+                            - remote_address: {}
+                            - generic_key: 
+                                descriptor_key: request_type
+                                descriptor_value: payment
+      
+                    # Route 3: General Endpoints:
+                    - match:
+                        path_separated_prefix: "/api"
+                      route:
+                        cluster: backend_cluster
+                        timeout: 30s
+                        rate_limits:
+                          - actions: 
+                            - remote_address: {}
+                            - generic_key: 
+                                descriptor_key: request_type
+                                descriptor_value: default_api
+                    # ── Route 4: Health check (bypass rate limiting) ─────
                     # The /health endpoint is excluded from rate limiting
                     # by not including rate_limits actions on this route.
                     - match:
-                        prefix: "/health"
+                        path_separated_prefix: "/health"
                       route:
                         cluster: backend_cluster
                         timeout: 5s
-                    # ── Route 3: Catch-all ───────────────────────────────
+                    # ── Route 5: Catch-all ───────────────────────────────
                     - match:
                         prefix: "/"
                       route:
                         cluster: backend_cluster
                         timeout: 30s
-
+                        rate_limits: 
+                          - actions: 
+                            - remote_address: {} 
+                            - generic_key: 
+                                descriptor_key: request_type
+                                descriptor_value: default
 
   # ── Clusters ────────────────────────────────────────────────────────────────
   # Clusters define the upstream services Envoy can forward requests to.
