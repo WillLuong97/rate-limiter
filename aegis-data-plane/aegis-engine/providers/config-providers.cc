@@ -10,15 +10,6 @@ ConfigProvider::ConfigProvider() {
         true,
         "Default token bucket rule"
     }; 
-
-    config_map_["ip"] = {
-        RateLimitConfig::TOKEN_BUCKET, 
-        100, 
-        10, 
-        true, 
-        "Per-IP token bucket"
-    }; 
-
     config_map_["login"] = {
         RateLimitConfig::SLIDING_WINDOW, 
         5, //5 requests 
@@ -33,6 +24,14 @@ ConfigProvider::ConfigProvider() {
         3600,
         true,
         "Payment endpoint sliding window — 10 requests per hour"
+    };
+    
+    config_map_["default_api"] = {
+        RateLimitConfig::TOKEN_BUCKET,
+        10,
+        5,
+        true,
+        "Default api endpoint using token bucket - bucket of 10 tokens capacity with a refill rate 5 tokens/sec "
     };
 }
 

@@ -38,7 +38,15 @@ int main(int argc, char * argv[])
    );
    builder.RegisterService(&service);
 
-   unique_ptr<grpc::Server> server(builder.BuildAndStart()); 
+   unique_ptr<grpc::Server> server(builder.BuildAndStart());
+
+   //If the server is not able to start, then we would get a nullpointer back and crash the program
+   //if so, log the error and exit the program
+   if (!server) {
+      cerr << "[aegis-main] Unable to start up gRPC server on port :8081 (port in use?) \n"; 
+      return -1; 
+   }
+
    cout << "[aegis-main] Aegis Engine listening on :8081\n"; 
    server->Wait(); 
    return 0; 
