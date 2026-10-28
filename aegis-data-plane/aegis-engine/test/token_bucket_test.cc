@@ -78,7 +78,7 @@ protected:
 
 TEST_F(TokenBucketTest, FirstConsumeStartsFromFullBucket) {
     auto bucket = make_bucket(5, 1);
-    RateLimitDecision d = bucket->consume();
+    RateLimitDecision d = bucket->consume(1);
     EXPECT_TRUE(d.allowed);
     EXPECT_EQ(d.remaining, 4);
     EXPECT_EQ(d.retry_after_seconds, 0);
@@ -119,7 +119,7 @@ TEST_F(TokenBucketTest, IsARateLimiter) {
 TEST_F(TokenBucketTest, RemainingDecrementsWithEachConsume) {
     auto bucket = make_bucket(5, 1);
     for (int expected = 4; expected >= 0; --expected) {
-        RateLimitDecision d = bucket->consume();
+        RateLimitDecision d = bucket->consume(1);
         EXPECT_TRUE(d.allowed) << "Failed when expecting remaining " << expected;
         EXPECT_EQ(d.remaining, expected);
     }
@@ -134,11 +134,11 @@ TEST_F(TokenBucketTest, ConsumeMultipleTokensAtOnce) {
 
 TEST_F(TokenBucketTest, ConsumeDeniesRequestWhenBucketEmpty) {
     auto bucket = make_bucket(3, 1);
-    bucket->consume();
-    bucket->consume();
-    EXPECT_EQ(bucket->consume().remaining, 0);  // bucket is now empty
+    bucket->consume(1);
+    bucket->consume(1);
+    EXPECT_EQ(bucket->consume(1).remaining, 0);  // bucket is now empty
 
-    RateLimitDecision d = bucket->consume();
+    RateLimitDecision d = bucket->consume(1);
     EXPECT_FALSE(d.allowed);
     EXPECT_EQ(d.remaining, 0);
 }
@@ -146,9 +146,9 @@ TEST_F(TokenBucketTest, ConsumeDeniesRequestWhenBucketEmpty) {
 TEST_F(TokenBucketTest, ConsumeAllowsExactCapacityRequests) {
     auto bucket = make_bucket(5, 1);
     for (int i = 0; i < 5; ++i) {
-        EXPECT_TRUE(bucket->consume().allowed) << "Failed on request " << i + 1;
+        EXPECT_TRUE(bucket->consume(1).allowed) << "Failed on request " << i + 1;
     }
-    EXPECT_FALSE(bucket->consume().allowed);  // 6th should be denied
+    EXPECT_FALSE(bucket->consume(1).allowed);  // 6th should be denied
 }
 
 TEST_F(TokenBucketTest, ConsumeDeniedWhenRequestingMoreThanAvailable) {
@@ -173,13 +173,13 @@ TEST_F(TokenBucketTest, DeniedRequestDoesNotConsumeTokens) {
 
 TEST_F(TokenBucketTest, RetryAfterIsZeroWhenAllowed) {
     auto bucket = make_bucket(5, 1);
-    EXPECT_EQ(bucket->consume().retry_after_seconds, 0);
+    EXPECT_EQ(bucket->consume(1).retry_after_seconds, 0);
 }
 
 TEST_F(TokenBucketTest, RetryAfterIsOneSecondForOneMissingToken) {
     auto bucket = make_bucket(3, 1);             // 1 token/sec
-    for (int i = 0; i < 3; ++i) bucket->consume();
-    RateLimitDecision d = bucket->consume();
+    for (int i = 0; i < 3; ++i) bucket->consume(1);
+    RateLimitDecision d = bucket->consume(1);
     EXPECT_FALSE(d.allowed);
     EXPECT_EQ(d.retry_after_seconds, 1);         // ceil((1 - ~0) / 1)
 }
@@ -207,12 +207,12 @@ TEST_F(TokenBucketTest, RetryAfterAccountsForRefillRate) {
 TEST_F(TokenBucketTest, TokensRefillOverTime) {
     auto bucket = make_bucket(5, 10);  // refills 10 tokens/sec = 1 token per 100ms
     // drain the bucket
-    for (int i = 0; i < 5; ++i) bucket->consume();
-    EXPECT_FALSE(bucket->consume().allowed);
+    for (int i = 0; i < 5; ++i) bucket->consume(1);
+    EXPECT_FALSE(bucket->consume(1).allowed);
 
     sleep_ms(200);  // wait 200ms — should refill ~2 tokens
 
-    RateLimitDecision d = bucket->consume();
+    RateLimitDecision d = bucket->consume(1);
     EXPECT_TRUE(d.allowed);
     EXPECT_GE(d.remaining, 1);   // ~2 refilled, 1 consumed
     EXPECT_LE(d.remaining, 2);   // tolerance for scheduler jitter
@@ -220,20 +220,20 @@ TEST_F(TokenBucketTest, TokensRefillOverTime) {
 
 TEST_F(TokenBucketTest, TokensDoNotExceedCapacity) {
     auto bucket = make_bucket(5, 100);  // very fast refill
-    bucket->consume();                  // create the key in Redis
+    bucket->consume(1);                  // create the key in Redis
     sleep_ms(200);                      // wait well past full (+20 tokens)
-    EXPECT_EQ(bucket->consume().remaining, 4);  // capped at 5, minus this one
+    EXPECT_EQ(bucket->consume(1).remaining, 4);  // capped at 5, minus this one
 }
 
 TEST_F(TokenBucketTest, PartialRefillAllowsCorrectNumberOfRequests) {
     auto bucket = make_bucket(5, 2);  // 2 tokens/sec = 1 token per 500ms
     // drain fully
-    for (int i = 0; i < 5; ++i) bucket->consume();
+    for (int i = 0; i < 5; ++i) bucket->consume(1);
 
     sleep_ms(500);  // wait for ~1 token to refill
 
-    EXPECT_TRUE(bucket->consume().allowed);   // 1 refilled token consumed
-    EXPECT_FALSE(bucket->consume().allowed);  // no more tokens
+    EXPECT_TRUE(bucket->consume(1).allowed);   // 1 refilled token consumed
+    EXPECT_FALSE(bucket->consume(1).allowed);  // no more tokens
 }
 
 // ---------------------------------------------------------------------------
@@ -246,7 +246,7 @@ TEST_F(TokenBucketTest, FailsOpenWhenRedisScriptErrors) {
     admin_->set(k, "not-a-hash");
     auto bucket = make_bucket(k, 5, 1);
 
-    RateLimitDecision d = bucket->consume();
+    RateLimitDecision d = bucket->consume(1);
     EXPECT_TRUE(d.allowed);              // fail open
     EXPECT_EQ(d.remaining, -1);          // unknown
     EXPECT_EQ(d.retry_after_seconds, 0);
@@ -265,7 +265,7 @@ TEST_F(TokenBucketTest, ThreadSafeUnderConcurrentConsume) {
 
     auto task = [&]() {
         for (int i = 0; i < 20; ++i) {
-            if (bucket->consume().allowed) {
+            if (bucket->consume(1).allowed) {
                 std::lock_guard<std::mutex> lock(count_mutex);
                 ++allowed;
             }
@@ -290,7 +290,7 @@ TEST_F(TokenBucketTest, SeparateInstancesShareStateThroughRedis) {
 
     auto task = [&](TokenBucket* bucket) {
         for (int i = 0; i < 50; ++i) {
-            if (bucket->consume().allowed) {
+            if (bucket->consume(1).allowed) {
                 std::lock_guard<std::mutex> lock(count_mutex);
                 ++allowed;
             }

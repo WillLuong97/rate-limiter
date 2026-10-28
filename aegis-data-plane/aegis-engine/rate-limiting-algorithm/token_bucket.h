@@ -34,7 +34,7 @@ public:
 
     // Attempt to consume `tokens` tokens.
     //Returns whether the request is allowed, plus remaining tokens and retry-after seconds.
-    RateLimitDecision consume(int consumed_token = 1) override;
+    RateLimitDecision consume(int token) override;
 
 private:
     // ── Redis operations ──────────────────────────────────────────────────────

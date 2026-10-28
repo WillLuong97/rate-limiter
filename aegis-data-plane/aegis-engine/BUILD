@@ -66,3 +66,15 @@ cc_test(
     size = "small",
 )
 
+cc_test(
+    name = "sliding_window_test",
+    srcs = ["test/sliding_window_test.cc"],
+    deps = [
+        ":rate_limiting_lib",
+        "@googletest//:gtest_main",
+    ],
+    copts = ["-std=c++17"],
+    linkopts = ["-lpthread"],
+    size = "small",
+)
+
