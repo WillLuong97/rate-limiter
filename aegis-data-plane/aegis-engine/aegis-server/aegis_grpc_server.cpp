@@ -45,12 +45,21 @@ grpc::Status RateLimitServiceImpl::ShouldRateLimit(
     std::string config_key = resolve_rule_key_from_request(request); 
     std::string bucket_key  = build_bucket_key_from_ip(incoming_ip, config_key);
     
-
-    //The limiter will be a pointer to a specific rate limiter class 
-    RateLimiter* limiter = get_or_create_limiter(bucket_key, config_key);
-
     //The final decision after the applying rate limiting logic on the current request
-    RateLimitDecision decision = limiter->consume();
+    RateLimitDecision decision;
+
+    try {
+        RateLimiter* limiter = get_or_create_limiter(bucket_key, config_key); 
+        decision = limiter->consume();       
+    } catch (const std::exception& e) {
+        // Last line of defence: limiters fail open on Redis errors themselves,
+        // this covers limiter creation and anything a limiter doesn't handle
+        std::cerr << "[aegis-server] Error: Rate Limiter failed for " 
+                    <<  bucket_key 
+                    << ": " << e.what() << "--failing open\n";
+        response->set_overall_code(RateLimitResponse::OK);
+        return grpc::Status::OK; 
+    }; 
 
     if (decision.remaining >= 0) {
         auto* remaining_header = response->add_response_headers_to_add(); 
@@ -155,8 +164,8 @@ RateLimiter* RateLimitServiceImpl::get_or_create_limiter(const std::string bucke
                 }
             }, 
             {  
-                RateLimitConfig::SLIDING_WINDOW, [](auto& key, auto capacity, auto refill_rate, auto& cluster_uri) {
-                    return std::make_unique<SlidingWindow>(key, capacity, refill_rate, cluster_uri);
+                RateLimitConfig::SLIDING_WINDOW, [](auto& key, auto capacity, auto window_seconds, auto& cluster_uri) {
+                    return std::make_unique<SlidingWindow>(key, capacity, window_seconds, cluster_uri);
                 }
             }
         };

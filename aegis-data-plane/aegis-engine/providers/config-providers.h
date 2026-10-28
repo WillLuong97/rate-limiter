@@ -18,7 +18,7 @@ struct RateLimitConfig {
 
     RateLimitAlgorithm algorithm = RateLimitAlgorithm::TOKEN_BUCKET; 
     int capacity = 100; // capacity:    100 tokens per IP
-    int refill_rate = 10; //refill_rate: 10 tokens per second
+    int refill_rate = 10; // TOKEN_BUCKET: tokens per second; SLIDING_WINDOW: window length in seconds
     
     bool enabled = true;  // kill switch per rule 
     std::string description; //human readable label, for logging and auditing to let us know which type of configuration this is     
