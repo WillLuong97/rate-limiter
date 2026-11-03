@@ -32,7 +32,15 @@ static_resources:
               stat_prefix: ingress_http
               normalize_path: true # resolves /./ and /../ and decodes unreserved %-encoding 
               merge_slashes: true  # //api//login becomes /api/login
-              path_with_escaped_slashes_action: UNESCAPE_AND_REDIRECT 
+              path_with_escaped_slashes_action: UNESCAPE_AND_REDIRECT
+              use_remote_address: true # Use the only IP address that actually passes the TCP handshake connection to be the source IP; this will help prevent forged IPs that are added in x-forwarded-from header  
+              # Treat no real client as internal, so client-supplied x-envoy-* control headers are removed.
+              # 192.0.2.1 is a reserved address. An empty list would fall back to all private ranges.
+              internal_address_config: 
+                cidr_ranges:  
+                  - address_prefix: 192.0.2.1
+                    prefix_len: 32 
+
               access_log:
                 - name: envoy.access_loggers.stdout
                   typed_config:

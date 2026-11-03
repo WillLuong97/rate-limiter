@@ -19,7 +19,7 @@ RateLimitServiceImpl::RateLimitServiceImpl(
  * 
  *  This is the method Envoy calls via gRPC for every incoming request.
  It receives a RateLimitRequest, unpacks the IP address from the descriptors,
- runs the token bucket logic, and writes OK or OVER_LIMIT into the response.
+ runs the rate limiting logic, and writes OK or OVER_LIMIT into the response.
  * ***/
 grpc::Status RateLimitServiceImpl::ShouldRateLimit(
             grpc::ServerContext* context, 
@@ -45,7 +45,7 @@ grpc::Status RateLimitServiceImpl::ShouldRateLimit(
     std::string config_key = resolve_rule_key_from_request(request); 
     std::string bucket_key  = build_bucket_key_from_ip(incoming_ip, config_key);
     
-    //The final decision after the applying rate limiting logic on the current request
+    //The final decision after applying rate limiting logic on the current request
     RateLimitDecision decision;
 
     try {
