@@ -1,8 +1,8 @@
 #include <gtest/gtest.h>
+#include <atomic>
 #include <chrono>
 #include <cstdlib>
 #include <memory>
-#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -59,13 +59,11 @@ protected:
         return k;
     }
 
+    // Limiters borrow the fixture's client, the same way production limiters
+    // borrow the one RedisCluster created in main(). The key is no longer part
+    // of the limiter: each test passes it to consume().
     std::unique_ptr<TokenBucket> make_bucket(int capacity, int refill_rate) {
-        return make_bucket(key(), capacity, refill_rate);
-    }
-
-    // Explicit key — for tests that share state across instances or pre-seed Redis
-    std::unique_ptr<TokenBucket> make_bucket(const std::string& k, int capacity, int refill_rate) {
-        return std::make_unique<TokenBucket>(k, capacity, refill_rate, redis_uri());
+        return std::make_unique<TokenBucket>(capacity, refill_rate, *admin_);
     }
 
     std::unique_ptr<sw::redis::RedisCluster> admin_;
@@ -78,7 +76,8 @@ protected:
 
 TEST_F(TokenBucketTest, FirstConsumeStartsFromFullBucket) {
     auto bucket = make_bucket(5, 1);
-    RateLimitDecision d = bucket->consume(1);
+    std::string k = key();
+    RateLimitDecision d = bucket->consume(k, 1);
     EXPECT_TRUE(d.allowed);
     EXPECT_EQ(d.remaining, 4);
     EXPECT_EQ(d.retry_after_seconds, 0);
@@ -100,16 +99,29 @@ TEST_F(TokenBucketTest, ThrowsOnNegativeRefillRate) {
     EXPECT_THROW(make_bucket(5, -1), std::invalid_argument);
 }
 
+TEST_F(TokenBucketTest, ConstructionDoesNoNetworkWork) {
+    // Limiters now only store 3 fields and borrow the shared client, which is
+    // what makes it OK to build one per request. 10,000 constructions should
+    // take microseconds; the old constructor opened a RedisCluster each time.
+    auto start = std::chrono::steady_clock::now();
+    for (int i = 0; i < 10000; ++i) {
+        TokenBucket bucket(5, 1, *admin_);
+    }
+    auto elapsed = std::chrono::steady_clock::now() - start;
+    EXPECT_LT(elapsed, std::chrono::milliseconds(100));
+}
+
 // ---------------------------------------------------------------------------
 // 2. Polymorphism — TokenBucket is usable as a RateLimiter
 // ---------------------------------------------------------------------------
 
 TEST_F(TokenBucketTest, IsARateLimiter) {
     std::unique_ptr<RateLimiter> limiter = make_bucket(5, 2);
-    // Should compile and behave correctly through the base class interface
-    RateLimitDecision d = limiter->consume();
+    std::string k = key();
+    // Through the base class, `tokens` uses its default argument (1)
+    RateLimitDecision d = limiter->consume(k);
     EXPECT_TRUE(d.allowed);
-    EXPECT_GE(d.remaining, 0);
+    EXPECT_EQ(d.remaining, 4);
 }
 
 // ---------------------------------------------------------------------------
@@ -118,8 +130,9 @@ TEST_F(TokenBucketTest, IsARateLimiter) {
 
 TEST_F(TokenBucketTest, RemainingDecrementsWithEachConsume) {
     auto bucket = make_bucket(5, 1);
+    std::string k = key();
     for (int expected = 4; expected >= 0; --expected) {
-        RateLimitDecision d = bucket->consume(1);
+        RateLimitDecision d = bucket->consume(k, 1);
         EXPECT_TRUE(d.allowed) << "Failed when expecting remaining " << expected;
         EXPECT_EQ(d.remaining, expected);
     }
@@ -127,92 +140,144 @@ TEST_F(TokenBucketTest, RemainingDecrementsWithEachConsume) {
 
 TEST_F(TokenBucketTest, ConsumeMultipleTokensAtOnce) {
     auto bucket = make_bucket(10, 1);
-    RateLimitDecision d = bucket->consume(3);
+    std::string k = key();
+    RateLimitDecision d = bucket->consume(k, 3);
     EXPECT_TRUE(d.allowed);
     EXPECT_EQ(d.remaining, 7);
 }
 
 TEST_F(TokenBucketTest, ConsumeDeniesRequestWhenBucketEmpty) {
     auto bucket = make_bucket(3, 1);
-    bucket->consume(1);
-    bucket->consume(1);
-    EXPECT_EQ(bucket->consume(1).remaining, 0);  // bucket is now empty
+    std::string k = key();
+    bucket->consume(k, 1);
+    bucket->consume(k, 1);
+    EXPECT_EQ(bucket->consume(k, 1).remaining, 0);  // bucket is now empty
 
-    RateLimitDecision d = bucket->consume(1);
+    RateLimitDecision d = bucket->consume(k, 1);
     EXPECT_FALSE(d.allowed);
     EXPECT_EQ(d.remaining, 0);
 }
 
 TEST_F(TokenBucketTest, ConsumeAllowsExactCapacityRequests) {
     auto bucket = make_bucket(5, 1);
+    std::string k = key();
     for (int i = 0; i < 5; ++i) {
-        EXPECT_TRUE(bucket->consume(1).allowed) << "Failed on request " << i + 1;
+        EXPECT_TRUE(bucket->consume(k, 1).allowed) << "Failed on request " << i + 1;
     }
-    EXPECT_FALSE(bucket->consume(1).allowed);  // 6th should be denied
+    EXPECT_FALSE(bucket->consume(k, 1).allowed);  // 6th should be denied
 }
 
 TEST_F(TokenBucketTest, ConsumeDeniedWhenRequestingMoreThanAvailable) {
     auto bucket = make_bucket(3, 1);
-    RateLimitDecision d = bucket->consume(5);   // requesting more than capacity
+    std::string k = key();
+    RateLimitDecision d = bucket->consume(k, 5);   // requesting more than capacity
     EXPECT_FALSE(d.allowed);
-    EXPECT_EQ(d.remaining, 3);                  // nothing was taken
+    EXPECT_EQ(d.remaining, 3);                     // nothing was taken
 }
 
 TEST_F(TokenBucketTest, DeniedRequestDoesNotConsumeTokens) {
     auto bucket = make_bucket(10, 1);
-    bucket->consume(8);                          // 2 left
-    EXPECT_FALSE(bucket->consume(5).allowed);    // too big — denied
-    RateLimitDecision d = bucket->consume(2);    // the 2 are still there
+    std::string k = key();
+    bucket->consume(k, 8);                          // 2 left
+    EXPECT_FALSE(bucket->consume(k, 5).allowed);    // too big — denied
+    RateLimitDecision d = bucket->consume(k, 2);    // the 2 are still there
     EXPECT_TRUE(d.allowed);
     EXPECT_EQ(d.remaining, 0);
 }
 
 // ---------------------------------------------------------------------------
-// 4. retry_after_seconds
+// 4. The key is passed to consume(), not stored in the limiter
+// ---------------------------------------------------------------------------
+
+TEST_F(TokenBucketTest, OneInstanceServesManyKeysIndependently) {
+    // One limiter per rule can now serve every caller of that rule.
+    // Draining ip A's bucket must not touch ip B's.
+    auto bucket = make_bucket(2, 1);
+    std::string ip_a = key();
+    std::string ip_b = key();
+
+    EXPECT_TRUE(bucket->consume(ip_a, 1).allowed);
+    EXPECT_TRUE(bucket->consume(ip_a, 1).allowed);
+    EXPECT_FALSE(bucket->consume(ip_a, 1).allowed);   // A is out of tokens
+
+    RateLimitDecision d = bucket->consume(ip_b, 1);    // B still has a full bucket
+    EXPECT_TRUE(d.allowed);
+    EXPECT_EQ(d.remaining, 1);
+}
+
+TEST_F(TokenBucketTest, StateLivesInRedisNotInTheLimiterObject) {
+    // This is why the limiters_ cache could be deleted: the server builds a
+    // fresh limiter per request, and the count must carry over between them.
+    std::string k = key();
+    for (int expected = 2; expected >= 0; --expected) {
+        auto per_request = make_bucket(3, 1);          // new object every time
+        RateLimitDecision d = per_request->consume(k, 1);
+        EXPECT_TRUE(d.allowed);
+        EXPECT_EQ(d.remaining, expected);
+    }                                                  // ...destroyed every time
+    EXPECT_FALSE(make_bucket(3, 1)->consume(k, 1).allowed);
+}
+
+TEST_F(TokenBucketTest, ConsumeWritesOnlyTheGivenKey) {
+    std::string k = key();
+    std::string untouched = key();
+    auto bucket = make_bucket(5, 1);
+    bucket->consume(k, 1);
+    EXPECT_EQ(admin_->exists(k), 1);
+    EXPECT_EQ(admin_->exists(untouched), 0);
+}
+
+// ---------------------------------------------------------------------------
+// 5. retry_after_seconds
 // ---------------------------------------------------------------------------
 
 TEST_F(TokenBucketTest, RetryAfterIsZeroWhenAllowed) {
     auto bucket = make_bucket(5, 1);
-    EXPECT_EQ(bucket->consume(1).retry_after_seconds, 0);
+    std::string k = key();
+    EXPECT_EQ(bucket->consume(k, 1).retry_after_seconds, 0);
 }
 
 TEST_F(TokenBucketTest, RetryAfterIsOneSecondForOneMissingToken) {
     auto bucket = make_bucket(3, 1);             // 1 token/sec
-    for (int i = 0; i < 3; ++i) bucket->consume(1);
-    RateLimitDecision d = bucket->consume(1);
+    std::string k = key();
+    for (int i = 0; i < 3; ++i) bucket->consume(k, 1);
+    RateLimitDecision d = bucket->consume(k, 1);
     EXPECT_FALSE(d.allowed);
     EXPECT_EQ(d.retry_after_seconds, 1);         // ceil((1 - ~0) / 1)
 }
 
 TEST_F(TokenBucketTest, RetryAfterScalesWithDeficit) {
     auto bucket = make_bucket(10, 1);            // 1 token/sec
-    bucket->consume(10);                         // drain
-    RateLimitDecision d = bucket->consume(4);    // missing ~4 tokens
+    std::string k = key();
+    bucket->consume(k, 10);                      // drain
+    RateLimitDecision d = bucket->consume(k, 4); // missing ~4 tokens
     EXPECT_FALSE(d.allowed);
     EXPECT_EQ(d.retry_after_seconds, 4);
 }
 
 TEST_F(TokenBucketTest, RetryAfterAccountsForRefillRate) {
     auto bucket = make_bucket(10, 5);            // 5 tokens/sec
-    bucket->consume(10);
-    RateLimitDecision d = bucket->consume(10);   // missing ~10 tokens at 5/sec
+    std::string k = key();
+    bucket->consume(k, 10);
+    RateLimitDecision d = bucket->consume(k, 10); // missing ~10 tokens at 5/sec
     EXPECT_FALSE(d.allowed);
     EXPECT_EQ(d.retry_after_seconds, 2);
 }
 
 // ---------------------------------------------------------------------------
-// 5. Refill behaviour
+// 6. Refill behaviour
 // ---------------------------------------------------------------------------
 
 TEST_F(TokenBucketTest, TokensRefillOverTime) {
     auto bucket = make_bucket(5, 10);  // refills 10 tokens/sec = 1 token per 100ms
+    std::string k = key();
     // drain the bucket
-    for (int i = 0; i < 5; ++i) bucket->consume(1);
-    EXPECT_FALSE(bucket->consume(1).allowed);
+    for (int i = 0; i < 5; ++i) bucket->consume(k, 1);
+    EXPECT_FALSE(bucket->consume(k, 1).allowed);
 
     sleep_ms(200);  // wait 200ms — should refill ~2 tokens
 
-    RateLimitDecision d = bucket->consume(1);
+    RateLimitDecision d = bucket->consume(k, 1);
     EXPECT_TRUE(d.allowed);
     EXPECT_GE(d.remaining, 1);   // ~2 refilled, 1 consumed
     EXPECT_LE(d.remaining, 2);   // tolerance for scheduler jitter
@@ -220,55 +285,70 @@ TEST_F(TokenBucketTest, TokensRefillOverTime) {
 
 TEST_F(TokenBucketTest, TokensDoNotExceedCapacity) {
     auto bucket = make_bucket(5, 100);  // very fast refill
-    bucket->consume(1);                  // create the key in Redis
+    std::string k = key();
+    bucket->consume(k, 1);              // create the key in Redis
     sleep_ms(200);                      // wait well past full (+20 tokens)
-    EXPECT_EQ(bucket->consume(1).remaining, 4);  // capped at 5, minus this one
+    EXPECT_EQ(bucket->consume(k, 1).remaining, 4);  // capped at 5, minus this one
 }
 
 TEST_F(TokenBucketTest, PartialRefillAllowsCorrectNumberOfRequests) {
     auto bucket = make_bucket(5, 2);  // 2 tokens/sec = 1 token per 500ms
+    std::string k = key();
     // drain fully
-    for (int i = 0; i < 5; ++i) bucket->consume(1);
+    for (int i = 0; i < 5; ++i) bucket->consume(k, 1);
 
     sleep_ms(500);  // wait for ~1 token to refill
 
-    EXPECT_TRUE(bucket->consume(1).allowed);   // 1 refilled token consumed
-    EXPECT_FALSE(bucket->consume(1).allowed);  // no more tokens
+    EXPECT_TRUE(bucket->consume(k, 1).allowed);   // 1 refilled token consumed
+    EXPECT_FALSE(bucket->consume(k, 1).allowed);  // no more tokens
 }
 
 // ---------------------------------------------------------------------------
-// 6. Fail-open on Redis errors
+// 7. Fail-open on Redis errors
 // ---------------------------------------------------------------------------
 
 TEST_F(TokenBucketTest, FailsOpenWhenRedisScriptErrors) {
     // A plain string at the bucket key makes HGET raise WRONGTYPE inside the script
     std::string k = key();
     admin_->set(k, "not-a-hash");
-    auto bucket = make_bucket(k, 5, 1);
+    auto bucket = make_bucket(5, 1);
 
-    RateLimitDecision d = bucket->consume(1);
+    RateLimitDecision d = bucket->consume(k, 1);
     EXPECT_TRUE(d.allowed);              // fail open
     EXPECT_EQ(d.remaining, -1);          // unknown
     EXPECT_EQ(d.retry_after_seconds, 0);
 }
 
+TEST_F(TokenBucketTest, BadKeyDoesNotAffectOtherKeysOnTheSameLimiter) {
+    // With one shared limiter, an error on one caller's key must not leak
+    // into the next call for a different caller.
+    std::string bad = key();
+    std::string good = key();
+    admin_->set(bad, "not-a-hash");
+    auto bucket = make_bucket(5, 1);
+
+    EXPECT_EQ(bucket->consume(bad, 1).remaining, -1);   // failed open
+    RateLimitDecision d = bucket->consume(good, 1);
+    EXPECT_TRUE(d.allowed);
+    EXPECT_EQ(d.remaining, 4);                          // a real answer
+}
+
 // ---------------------------------------------------------------------------
-// 7. Thread safety / distributed state
+// 8. Thread safety / distributed state
 // ---------------------------------------------------------------------------
 
-TEST_F(TokenBucketTest, ThreadSafeUnderConcurrentConsume) {
+TEST_F(TokenBucketTest, ThreadSafeUnderConcurrentConsumeOnOneInstance) {
+    // TokenBucket no longer has a mutex: 5 threads share ONE instance and ONE
+    // client. The atomic Lua script must still hand out at most 50 tokens.
     // Slow refill so the capacity bound is actually exercised:
-    // 5 threads x 20 requests = 100 attempts against 50 tokens
+    // 5 threads x 20 requests = 100 attempts against 50 tokens.
     auto bucket = make_bucket(50, 1);
-    int allowed = 0;
-    std::mutex count_mutex;
+    std::string k = key();
+    std::atomic<int> allowed{0};
 
     auto task = [&]() {
         for (int i = 0; i < 20; ++i) {
-            if (bucket->consume(1).allowed) {
-                std::lock_guard<std::mutex> lock(count_mutex);
-                ++allowed;
-            }
+            if (bucket->consume(k, 1).allowed) ++allowed;
         }
     };
 
@@ -276,30 +356,48 @@ TEST_F(TokenBucketTest, ThreadSafeUnderConcurrentConsume) {
     t1.join(); t2.join(); t3.join(); t4.join(); t5.join();
 
     // allowed should never exceed capacity (+1 for refill during the run)
-    EXPECT_GE(allowed, 50);
-    EXPECT_LE(allowed, 51);
+    EXPECT_GE(allowed.load(), 50);
+    EXPECT_LE(allowed.load(), 51);
 }
 
-TEST_F(TokenBucketTest, SeparateInstancesShareStateThroughRedis) {
-    // Simulates two Aegis replicas: no shared C++ mutex, only the atomic Lua script
+TEST_F(TokenBucketTest, ThreadSafeWithALimiterPerRequest) {
+    // Mirrors the server: every request builds its own short-lived limiter,
+    // and all of them share one client and one Redis key.
     std::string k = key();
-    auto replica_a = make_bucket(k, 50, 1);
-    auto replica_b = make_bucket(k, 50, 1);
-    int allowed = 0;
-    std::mutex count_mutex;
+    std::atomic<int> allowed{0};
 
-    auto task = [&](TokenBucket* bucket) {
-        for (int i = 0; i < 50; ++i) {
-            if (bucket->consume(1).allowed) {
-                std::lock_guard<std::mutex> lock(count_mutex);
-                ++allowed;
-            }
+    auto task = [&]() {
+        for (int i = 0; i < 20; ++i) {
+            auto per_request = make_bucket(50, 1);
+            if (per_request->consume(k, 1).allowed) ++allowed;
         }
     };
 
-    std::thread ta(task, replica_a.get()), tb(task, replica_b.get());
+    std::thread t1(task), t2(task), t3(task), t4(task), t5(task);
+    t1.join(); t2.join(); t3.join(); t4.join(); t5.join();
+
+    EXPECT_GE(allowed.load(), 50);
+    EXPECT_LE(allowed.load(), 51);
+}
+
+TEST_F(TokenBucketTest, SeparateReplicasShareStateThroughRedis) {
+    // Simulates two Aegis replicas: each has its OWN RedisCluster client (like
+    // two processes), no shared C++ state, only the atomic Lua script.
+    sw::redis::RedisCluster other_replica_client(redis_uri());
+    std::string k = key();
+    TokenBucket replica_a(50, 1, *admin_);
+    TokenBucket replica_b(50, 1, other_replica_client);
+    std::atomic<int> allowed{0};
+
+    auto task = [&](TokenBucket* bucket) {
+        for (int i = 0; i < 50; ++i) {
+            if (bucket->consume(k, 1).allowed) ++allowed;
+        }
+    };
+
+    std::thread ta(task, &replica_a), tb(task, &replica_b);
     ta.join(); tb.join();
 
-    EXPECT_GE(allowed, 50);
-    EXPECT_LE(allowed, 51);
+    EXPECT_GE(allowed.load(), 50);
+    EXPECT_LE(allowed.load(), 51);
 }

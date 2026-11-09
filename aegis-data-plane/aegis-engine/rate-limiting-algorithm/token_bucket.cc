@@ -4,17 +4,16 @@
 #include <iterator> 
 #include <iostream>
 
+using namespace std; 
 // -----------------------------------------------------------------------------
 // Constructor
 // -----------------------------------------------------------------------------
-TokenBucket::TokenBucket(const string& key, 
-                int capacity, 
+TokenBucket::TokenBucket(int capacity, 
                 int refill_rate,
-                const string& redis_uri)
-                :key_(key), 
-                capacity_(capacity),
-                refill_rate_(refill_rate),
-                cluster_(redis_uri) // connects + discovers cluster topology automatically
+                sw::redis::RedisCluster& redis_cluster)
+                :capacity_(capacity),
+                refill_rate_(refill_rate), 
+                redis_cluster_(redis_cluster)
 {
     if (capacity <= 0) {
         throw std::invalid_argument("Capacity must be positive.");
@@ -31,21 +30,19 @@ TokenBucket::TokenBucket(const string& key,
 // -----------------------------------------------------------------------------
 // Token bucket interface implementation 
 // -----------------------------------------------------------------------------
-RateLimitDecision TokenBucket::consume(int tokens) {
-    return execute_token_consumption_script(tokens); 
+RateLimitDecision TokenBucket::consume(const string& key, int tokens) {
+    return execute_token_consumption_script(key, tokens); 
 }
 
 // -----------------------------------------------------------------------------
 // Private helpers
 // -----------------------------------------------------------------------------
-RateLimitDecision TokenBucket::execute_token_consumption_script(int token_requested) {
-    std::lock_guard<std::mutex> lock(mutex_);
-
+RateLimitDecision TokenBucket::execute_token_consumption_script(const string& key, int token_requested) {
     try {
         vector<long long> results;
-        cluster_.eval(
+        redis_cluster_.eval(
             CONSUME_SCRIPT, 
-            { key_ }, 
+            { key }, 
             {
                 to_string(capacity_),
                 to_string(refill_rate_), 

@@ -4,14 +4,15 @@
 #include <iterator> 
 #include <iostream>
 
+using namespace std; 
+
 SlidingWindow::SlidingWindow(
-    const string& key, 
     int capacity, 
     int window_seconds,
-    const string& cluster_uri):key_(key), 
+    sw::redis::RedisCluster& redis_cluster) : 
                 capacity_(capacity),
                 window_seconds_(window_seconds),
-                cluster_(cluster_uri) // connects + discovers cluster topology automatically
+                redis_cluster_(redis_cluster)
 {
     if (capacity <= 0) {
         throw std::invalid_argument("Capacity must be positive.");
@@ -22,18 +23,18 @@ SlidingWindow::SlidingWindow(
     }
 }
 
-//Todo: implement the sliding window algorithm here
-RateLimitDecision SlidingWindow::consume(int token){ 
-    return execute_token_consumption_script(token); 
+
+RateLimitDecision SlidingWindow::consume(const string& key, int token){    
+    return execute_token_consumption_script(key, token); 
 }
 
 //helper method to run the lua script to redis for sliding window algorithm 
-RateLimitDecision SlidingWindow::execute_token_consumption_script(int token_requested) {
+RateLimitDecision SlidingWindow::execute_token_consumption_script(const string& key, int token_requested) {
     try {
         vector <long long> results; 
-        cluster_.eval(
+        redis_cluster_.eval(
             CONSUME_SCRIPT,
-            {key_}, 
+            {key}, 
             {
                 to_string(capacity_), 
                 to_string(window_seconds_), 

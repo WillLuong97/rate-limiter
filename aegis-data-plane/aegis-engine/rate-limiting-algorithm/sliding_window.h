@@ -6,30 +6,25 @@
 #include <hiredis/hiredis.h>
 #include <string> 
 #include <sw/redis++/redis++.h>
-#include <mutex>
-
-using namespace std; 
 
 class SlidingWindow : public RateLimiter {
     public: 
-        SlidingWindow(const string& key, 
-                int capacity, 
+        SlidingWindow(int capacity, 
                 int window_seconds,
-                const string& cluster_uri = "tcp://127.0.0.1:7001");  //place holders
+                sw::redis::RedisCluster& redis_cluster);
 
         // Attempt to consume `tokens` tokens.
        //Returns whether the request is allowed, plus remaining tokens and retry-after seconds.
-        RateLimitDecision consume(int token) override;
+        RateLimitDecision consume(const std::string& key, int token) override;
 
     private:
         // ── Private class members ──────────────────────────────────────────────────────
-        RateLimitDecision execute_token_consumption_script(int token_requested);
-        string key_; 
+        RateLimitDecision execute_token_consumption_script(const std::string& key, int token_requested);
         int capacity_;
         int window_seconds_;
-        // RedisCluster — NOT plain Redis but from Redis plus plus— handles slot routing,
-        // MOVED/ASK redirects, and per-node connection pooling internally
-        sw::redis::RedisCluster cluster_;
+        // The shared client created in main(). The limiter only borrows it;
+        // main() owns it and keeps it alive for the whole process.        
+        sw::redis::RedisCluster& redis_cluster_; 
 
         //Lua scripts to support sliding window algorithm
         // ── Variable to store the actual lua script command ──────────────────────────────────────────────────────

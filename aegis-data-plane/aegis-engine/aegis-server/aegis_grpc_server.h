@@ -34,7 +34,7 @@ class RateLimitServiceImpl final : public RateLimitService::Service {
         // the RateLimitServiceImpl class type when calling it 
         explicit RateLimitServiceImpl (
             ConfigProvider& config_provider,          
-            const std::string& cluster_nodes = "tcp://127.0.0.1:7001"           
+            sw::redis::RedisCluster& redis_cluster
        ); 
 
         grpc::Status ShouldRateLimit(
@@ -57,13 +57,9 @@ class RateLimitServiceImpl final : public RateLimitService::Service {
     std::string resolve_rule_key_from_request(const RateLimitRequest* request); 
 
 
-    //Get or create a token bucket for a given redis key
-    RateLimiter* get_or_create_limiter(const std::string bucket_key, const std::string rule_key); 
+    //Build a limiter for this rule (one per request)
+    std::unique_ptr<RateLimiter> create_limiter(const std::string& rule_key); 
 
     ConfigProvider& config_provider_;               // holds algorithm, capacity, rate per rule
-    std::string cluster_nodes_; 
-
-    // One token bucket per IP address: 
-    std::unordered_map<std::string, std::unique_ptr<RateLimiter>> limiters_; 
-    std::mutex limiter_mutex;   
+    sw::redis::RedisCluster& redis_cluster_; 
 };

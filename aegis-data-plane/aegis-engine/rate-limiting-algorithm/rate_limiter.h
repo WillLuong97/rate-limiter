@@ -1,4 +1,6 @@
-# pragma once 
+#pragma once 
+#include <string> 
+
 
 struct RateLimitDecision {
     bool allowed; 
@@ -14,5 +16,5 @@ public:
     virtual ~RateLimiter() = default;
 
     //Returns whether the request is allowed, plus remaining tokens and retry-after seconds.
-    virtual RateLimitDecision consume(int tokens = 1) = 0;
+    virtual RateLimitDecision consume(const std::string& key, int tokens = 1) = 0;
 };

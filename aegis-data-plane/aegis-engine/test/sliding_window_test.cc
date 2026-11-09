@@ -1,9 +1,9 @@
 #include <gtest/gtest.h>
+#include <atomic>
 #include <chrono>
 #include <cstdlib>
 #include <iterator>
 #include <memory>
-#include <mutex>
 #include <string>
 #include <thread>
 #include <utility>
@@ -66,13 +66,11 @@ protected:
         return k;
     }
 
+    // Limiters borrow the fixture's client, the same way production limiters
+    // borrow the one RedisCluster created in main(). The key is no longer part
+    // of the limiter: each test passes it to consume().
     std::unique_ptr<SlidingWindow> make_window(int capacity, int window_seconds) {
-        return make_window(key(), capacity, window_seconds);
-    }
-
-    // Explicit key — for tests that inspect Redis or share state across instances
-    std::unique_ptr<SlidingWindow> make_window(const std::string& k, int capacity, int window_seconds) {
-        return std::make_unique<SlidingWindow>(k, capacity, window_seconds, redis_uri());
+        return std::make_unique<SlidingWindow>(capacity, window_seconds, *admin_);
     }
 
     // All {member, score} pairs in the sorted set, oldest first
@@ -92,7 +90,8 @@ protected:
 
 TEST_F(SlidingWindowTest, FirstConsumeStartsFromEmptyWindow) {
     auto window = make_window(5, 60);
-    RateLimitDecision d = window->consume(1);
+    std::string k = key();
+    RateLimitDecision d = window->consume(k, 1);
     EXPECT_TRUE(d.allowed);
     EXPECT_EQ(d.remaining, 4);
     EXPECT_EQ(d.retry_after_seconds, 0);
@@ -114,14 +113,26 @@ TEST_F(SlidingWindowTest, ThrowsOnNegativeWindow) {
     EXPECT_THROW(make_window(5, -1), std::invalid_argument);
 }
 
+TEST_F(SlidingWindowTest, ConstructionDoesNoNetworkWork) {
+    // Limiters now only store 3 fields and borrow the shared client, which is
+    // what makes it OK to build one per request.
+    auto start = std::chrono::steady_clock::now();
+    for (int i = 0; i < 10000; ++i) {
+        SlidingWindow window(5, 60, *admin_);
+    }
+    auto elapsed = std::chrono::steady_clock::now() - start;
+    EXPECT_LT(elapsed, std::chrono::milliseconds(100));
+}
+
 // ---------------------------------------------------------------------------
 // 2. Polymorphism — SlidingWindow is usable as a RateLimiter
 // ---------------------------------------------------------------------------
 
 TEST_F(SlidingWindowTest, IsARateLimiter) {
     std::unique_ptr<RateLimiter> limiter = make_window(5, 60);
-    // Uses the base class default argument (1 token)
-    RateLimitDecision d = limiter->consume();
+    std::string k = key();
+    // Through the base class, `tokens` uses its default argument (1)
+    RateLimitDecision d = limiter->consume(k);
     EXPECT_TRUE(d.allowed);
     EXPECT_EQ(d.remaining, 4);
 }
@@ -132,8 +143,9 @@ TEST_F(SlidingWindowTest, IsARateLimiter) {
 
 TEST_F(SlidingWindowTest, RemainingDecrementsWithEachConsume) {
     auto window = make_window(5, 60);
+    std::string k = key();
     for (int expected = 4; expected >= 0; --expected) {
-        RateLimitDecision d = window->consume(1);
+        RateLimitDecision d = window->consume(k, 1);
         EXPECT_TRUE(d.allowed) << "Failed when expecting remaining " << expected;
         EXPECT_EQ(d.remaining, expected);
     }
@@ -141,75 +153,110 @@ TEST_F(SlidingWindowTest, RemainingDecrementsWithEachConsume) {
 
 TEST_F(SlidingWindowTest, ConsumeAllowsExactCapacityRequests) {
     auto window = make_window(5, 60);
+    std::string k = key();
     for (int i = 0; i < 5; ++i) {
-        EXPECT_TRUE(window->consume(1).allowed) << "Failed on request " << i + 1;
+        EXPECT_TRUE(window->consume(k, 1).allowed) << "Failed on request " << i + 1;
     }
-    EXPECT_FALSE(window->consume(1).allowed);  // 6th should be denied
+    EXPECT_FALSE(window->consume(k, 1).allowed);  // 6th should be denied
 }
 
 TEST_F(SlidingWindowTest, RejectedRemainingIsZeroNotNegative) {
     // The gRPC server only sends X-RateLimit-Remaining when remaining >= 0
     auto window = make_window(3, 60);
-    for (int i = 0; i < 3; ++i) window->consume(1);
-    RateLimitDecision d = window->consume(1);
+    std::string k = key();
+    for (int i = 0; i < 3; ++i) window->consume(k, 1);
+    RateLimitDecision d = window->consume(k, 1);
     EXPECT_FALSE(d.allowed);
     EXPECT_EQ(d.remaining, 0);
 }
 
 TEST_F(SlidingWindowTest, ConsumeMultipleTokensAtOnce) {
     auto window = make_window(10, 60);
-    RateLimitDecision d = window->consume(3);
+    std::string k = key();
+    RateLimitDecision d = window->consume(k, 3);
     EXPECT_TRUE(d.allowed);
     EXPECT_EQ(d.remaining, 7);
 }
 
 TEST_F(SlidingWindowTest, MultiTokenConsumeIsAllOrNothing) {
     auto window = make_window(5, 60);
-    EXPECT_TRUE(window->consume(3).allowed);    // 2 left
+    std::string k = key();
+    EXPECT_TRUE(window->consume(k, 3).allowed);    // 2 left
 
-    RateLimitDecision d = window->consume(3);   // 3 + 3 > 5
+    RateLimitDecision d = window->consume(k, 3);   // 3 + 3 > 5
     EXPECT_FALSE(d.allowed);
-    EXPECT_EQ(d.remaining, 2);                  // nothing was recorded
+    EXPECT_EQ(d.remaining, 2);                     // nothing was recorded
 
-    d = window->consume(2);                     // the 2 are still there
+    d = window->consume(k, 2);                     // the 2 are still there
     EXPECT_TRUE(d.allowed);
     EXPECT_EQ(d.remaining, 0);
 }
 
 TEST_F(SlidingWindowTest, ConsumeDeniedWhenRequestingMoreThanCapacity) {
     auto window = make_window(3, 60);
-    RateLimitDecision d = window->consume(5);
+    std::string k = key();
+    RateLimitDecision d = window->consume(k, 5);
     EXPECT_FALSE(d.allowed);
-    EXPECT_EQ(d.remaining, 3);                  // empty window, nothing taken
+    EXPECT_EQ(d.remaining, 3);                     // empty window, nothing taken
 }
 
 // ---------------------------------------------------------------------------
-// 4. What gets stored in Redis
+// 4. The key is passed to consume(), not stored in the limiter
+// ---------------------------------------------------------------------------
+
+TEST_F(SlidingWindowTest, OneInstanceServesManyKeysIndependently) {
+    // e.g. ip:A:login vs ip:B:login through the SAME limiter object
+    auto window = make_window(1, 60);
+    std::string ip_a = key();
+    std::string ip_b = key();
+    EXPECT_TRUE(window->consume(ip_a, 1).allowed);
+    EXPECT_FALSE(window->consume(ip_a, 1).allowed);   // A hit its limit
+    EXPECT_TRUE(window->consume(ip_b, 1).allowed);    // B is unaffected
+    EXPECT_EQ(admin_->zcard(ip_a), 1);
+    EXPECT_EQ(admin_->zcard(ip_b), 1);
+}
+
+TEST_F(SlidingWindowTest, StateLivesInRedisNotInTheLimiterObject) {
+    // This is why the limiters_ cache could be deleted: the server builds a
+    // fresh limiter per request, and the count must carry over between them.
+    std::string k = key();
+    for (int expected = 2; expected >= 0; --expected) {
+        auto per_request = make_window(3, 60);         // new object every time
+        RateLimitDecision d = per_request->consume(k, 1);
+        EXPECT_TRUE(d.allowed);
+        EXPECT_EQ(d.remaining, expected);
+    }                                                  // ...destroyed every time
+    EXPECT_FALSE(make_window(3, 60)->consume(k, 1).allowed);
+    EXPECT_EQ(admin_->zcard(k), 3);
+}
+
+// ---------------------------------------------------------------------------
+// 5. What gets stored in Redis
 // ---------------------------------------------------------------------------
 
 TEST_F(SlidingWindowTest, StoresOneEntryPerAllowedToken) {
     std::string k = key();
-    auto window = make_window(k, 10, 60);
-    window->consume(1);
-    window->consume(3);
+    auto window = make_window(10, 60);
+    window->consume(k, 1);
+    window->consume(k, 3);
     // ZCARD drives the decision, so every token needs its own unique member
     EXPECT_EQ(admin_->zcard(k), 4);
 }
 
 TEST_F(SlidingWindowTest, RejectedRequestsAreNotStored) {
     std::string k = key();
-    auto window = make_window(k, 2, 60);
-    window->consume(1);
-    window->consume(1);
-    for (int i = 0; i < 5; ++i) EXPECT_FALSE(window->consume(1).allowed);
+    auto window = make_window(2, 60);
+    window->consume(k, 1);
+    window->consume(k, 1);
+    for (int i = 0; i < 5; ++i) EXPECT_FALSE(window->consume(k, 1).allowed);
     EXPECT_EQ(admin_->zcard(k), 2);
 }
 
 TEST_F(SlidingWindowTest, ScoresAreRedisTimeInMilliseconds) {
     std::string k = key();
-    auto window = make_window(k, 5, 60);
+    auto window = make_window(5, 60);
     long long before = now_unix_ms();
-    window->consume(1);
+    window->consume(k, 1);
     long long after = now_unix_ms();
 
     auto e = entries(k);
@@ -221,8 +268,8 @@ TEST_F(SlidingWindowTest, ScoresAreRedisTimeInMilliseconds) {
 
 TEST_F(SlidingWindowTest, KeyExpiresAfterWindow) {
     std::string k = key();
-    auto window = make_window(k, 5, 60);
-    window->consume(1);
+    auto window = make_window(5, 60);
+    window->consume(k, 1);
     long long ttl_ms = admin_->pttl(k);
     EXPECT_GT(ttl_ms, 0);                      // a TTL is set
     EXPECT_LE(ttl_ms, 60 * 1000);              // and it is the window, in ms
@@ -230,154 +277,178 @@ TEST_F(SlidingWindowTest, KeyExpiresAfterWindow) {
 }
 
 // ---------------------------------------------------------------------------
-// 5. retry_after_seconds
+// 6. retry_after_seconds
 // ---------------------------------------------------------------------------
 
 TEST_F(SlidingWindowTest, RetryAfterIsZeroWhenAllowed) {
     auto window = make_window(5, 60);
-    EXPECT_EQ(window->consume(1).retry_after_seconds, 0);
+    std::string k = key();
+    EXPECT_EQ(window->consume(k, 1).retry_after_seconds, 0);
 }
 
 TEST_F(SlidingWindowTest, RetryAfterIsFullWindowRightAfterFilling) {
     auto window = make_window(3, 60);
-    for (int i = 0; i < 3; ++i) window->consume(1);
-    RateLimitDecision d = window->consume(1);   // oldest entry is ~0s old
+    std::string k = key();
+    for (int i = 0; i < 3; ++i) window->consume(k, 1);
+    RateLimitDecision d = window->consume(k, 1);   // oldest entry is ~0s old
     EXPECT_FALSE(d.allowed);
     EXPECT_GE(d.retry_after_seconds, 59);
     EXPECT_LE(d.retry_after_seconds, 60);
 }
 
 TEST_F(SlidingWindowTest, RetryAfterShrinksAsOldestEntryAges) {
-    auto window = make_window(1, 3);            // 1 request per 3s
-    window->consume(1);
-    sleep_ms(1500);                             // oldest entry is now ~1.5s old
-    RateLimitDecision d = window->consume(1);
+    auto window = make_window(1, 3);               // 1 request per 3s
+    std::string k = key();
+    window->consume(k, 1);
+    sleep_ms(1500);                                // oldest entry is now ~1.5s old
+    RateLimitDecision d = window->consume(k, 1);
     EXPECT_FALSE(d.allowed);
-    EXPECT_EQ(d.retry_after_seconds, 2);        // ceil(3 - 1.5)
+    EXPECT_EQ(d.retry_after_seconds, 2);           // ceil(3 - 1.5)
 }
 
 TEST_F(SlidingWindowTest, RetryAfterIsWindowWhenRequestExceedsCapacity) {
     // Empty window, so there is no oldest entry to wait for
     auto window = make_window(3, 60);
-    RateLimitDecision d = window->consume(5);
+    std::string k = key();
+    RateLimitDecision d = window->consume(k, 5);
     EXPECT_FALSE(d.allowed);
     EXPECT_EQ(d.retry_after_seconds, 60);
 }
 
 // ---------------------------------------------------------------------------
-// 6. Sliding behaviour
+// 7. Sliding behaviour
 // ---------------------------------------------------------------------------
 
 TEST_F(SlidingWindowTest, SlotsFreeUpAfterWindowPasses) {
-    auto window = make_window(2, 1);            // 2 requests per 1s
-    EXPECT_TRUE(window->consume(1).allowed);
-    EXPECT_TRUE(window->consume(1).allowed);
-    EXPECT_FALSE(window->consume(1).allowed);
+    auto window = make_window(2, 1);               // 2 requests per 1s
+    std::string k = key();
+    EXPECT_TRUE(window->consume(k, 1).allowed);
+    EXPECT_TRUE(window->consume(k, 1).allowed);
+    EXPECT_FALSE(window->consume(k, 1).allowed);
 
-    sleep_ms(1100);                             // both entries slide out
+    sleep_ms(1100);                                // both entries slide out
 
-    RateLimitDecision d = window->consume(1);
+    RateLimitDecision d = window->consume(k, 1);
     EXPECT_TRUE(d.allowed);
     EXPECT_EQ(d.remaining, 1);
 }
 
 TEST_F(SlidingWindowTest, SlotsFreeUpOneAtATime) {
-    auto window = make_window(2, 2);            // 2 requests per 2s
-    EXPECT_TRUE(window->consume(1).allowed);    // t = 0s
+    auto window = make_window(2, 2);               // 2 requests per 2s
+    std::string k = key();
+    EXPECT_TRUE(window->consume(k, 1).allowed);    // t = 0s
     sleep_ms(1000);
-    EXPECT_TRUE(window->consume(1).allowed);    // t = 1s
-    EXPECT_FALSE(window->consume(1).allowed);   // full
+    EXPECT_TRUE(window->consume(k, 1).allowed);    // t = 1s
+    EXPECT_FALSE(window->consume(k, 1).allowed);   // full
 
-    sleep_ms(1100);                             // t = 2.1s: only the t=0s entry has left
+    sleep_ms(1100);                                // t = 2.1s: only the t=0s entry has left
 
-    EXPECT_TRUE(window->consume(1).allowed);    // takes the freed slot
-    EXPECT_FALSE(window->consume(1).allowed);   // t=1s entry is still in the window
+    EXPECT_TRUE(window->consume(k, 1).allowed);    // takes the freed slot
+    EXPECT_FALSE(window->consume(k, 1).allowed);   // t=1s entry is still in the window
 }
 
 TEST_F(SlidingWindowTest, RejectedRequestsDoNotExtendLockout) {
-    auto window = make_window(1, 1);            // 1 request per 1s
-    EXPECT_TRUE(window->consume(1).allowed);
-    for (int i = 0; i < 5; ++i) {               // hammer while locked out
-        EXPECT_FALSE(window->consume(1).allowed);
+    auto window = make_window(1, 1);               // 1 request per 1s
+    std::string k = key();
+    EXPECT_TRUE(window->consume(k, 1).allowed);
+    for (int i = 0; i < 5; ++i) {                  // hammer while locked out
+        EXPECT_FALSE(window->consume(k, 1).allowed);
         sleep_ms(100);
     }
-    sleep_ms(600);                              // ~1.1s after the allowed request
-    EXPECT_TRUE(window->consume(1).allowed);
-}
-
-TEST_F(SlidingWindowTest, SeparateKeysAreIndependent) {
-    // e.g. ip:A:login vs ip:B:login — one IP hitting its limit doesn't affect another
-    auto window_a = make_window(1, 60);
-    auto window_b = make_window(1, 60);
-    EXPECT_TRUE(window_a->consume(1).allowed);
-    EXPECT_FALSE(window_a->consume(1).allowed);
-    EXPECT_TRUE(window_b->consume(1).allowed);
+    sleep_ms(600);                                 // ~1.1s after the allowed request
+    EXPECT_TRUE(window->consume(k, 1).allowed);
 }
 
 // ---------------------------------------------------------------------------
-// 7. Fail-open on Redis errors
+// 8. Fail-open on Redis errors
 // ---------------------------------------------------------------------------
 
 TEST_F(SlidingWindowTest, FailsOpenWhenRedisScriptErrors) {
     // A plain string at the key makes ZREMRANGEBYSCORE raise WRONGTYPE inside the script
     std::string k = key();
     admin_->set(k, "not-a-sorted-set");
-    auto window = make_window(k, 5, 60);
+    auto window = make_window(5, 60);
 
-    RateLimitDecision d = window->consume(1);
+    RateLimitDecision d = window->consume(k, 1);
     EXPECT_TRUE(d.allowed);              // fail open
     EXPECT_EQ(d.remaining, -1);          // unknown
     EXPECT_EQ(d.retry_after_seconds, 0);
 }
 
+TEST_F(SlidingWindowTest, BadKeyDoesNotAffectOtherKeysOnTheSameLimiter) {
+    std::string bad = key();
+    std::string good = key();
+    admin_->set(bad, "not-a-sorted-set");
+    auto window = make_window(5, 60);
+
+    EXPECT_EQ(window->consume(bad, 1).remaining, -1);   // failed open
+    RateLimitDecision d = window->consume(good, 1);
+    EXPECT_TRUE(d.allowed);
+    EXPECT_EQ(d.remaining, 4);                          // a real answer
+}
+
 // ---------------------------------------------------------------------------
-// 8. Thread safety / distributed state
+// 9. Thread safety / distributed state
 // ---------------------------------------------------------------------------
 
-TEST_F(SlidingWindowTest, ThreadSafeUnderConcurrentConsume) {
-    // 5 threads x 20 requests = 100 attempts against a limit of 50.
-    // Nothing slides out of a 60s window during the run, so the bound is exact.
+TEST_F(SlidingWindowTest, ThreadSafeUnderConcurrentConsumeOnOneInstance) {
+    // 5 threads share ONE instance and ONE client: 100 attempts against a
+    // limit of 50. Nothing slides out of a 60s window during the run, so the
+    // bound is exact.
     std::string k = key();
-    auto window = make_window(k, 50, 60);
-    int allowed = 0;
-    std::mutex count_mutex;
+    auto window = make_window(50, 60);
+    std::atomic<int> allowed{0};
 
     auto task = [&]() {
         for (int i = 0; i < 20; ++i) {
-            if (window->consume(1).allowed) {
-                std::lock_guard<std::mutex> lock(count_mutex);
-                ++allowed;
-            }
+            if (window->consume(k, 1).allowed) ++allowed;
         }
     };
 
     std::thread t1(task), t2(task), t3(task), t4(task), t5(task);
     t1.join(); t2.join(); t3.join(); t4.join(); t5.join();
 
-    EXPECT_EQ(allowed, 50);
+    EXPECT_EQ(allowed.load(), 50);
     EXPECT_EQ(admin_->zcard(k), 50);     // no two requests collided on the same member
 }
 
-TEST_F(SlidingWindowTest, SeparateInstancesShareStateThroughRedis) {
-    // Simulates two Aegis replicas: no shared C++ state, only the atomic Lua script
+TEST_F(SlidingWindowTest, ThreadSafeWithALimiterPerRequest) {
+    // Mirrors the server: every request builds its own short-lived limiter.
     std::string k = key();
-    auto replica_a = make_window(k, 50, 60);
-    auto replica_b = make_window(k, 50, 60);
-    int allowed = 0;
-    std::mutex count_mutex;
+    std::atomic<int> allowed{0};
 
-    auto task = [&](SlidingWindow* window) {
-        for (int i = 0; i < 50; ++i) {
-            if (window->consume(1).allowed) {
-                std::lock_guard<std::mutex> lock(count_mutex);
-                ++allowed;
-            }
+    auto task = [&]() {
+        for (int i = 0; i < 20; ++i) {
+            auto per_request = make_window(50, 60);
+            if (per_request->consume(k, 1).allowed) ++allowed;
         }
     };
 
-    std::thread ta(task, replica_a.get()), tb(task, replica_b.get());
+    std::thread t1(task), t2(task), t3(task), t4(task), t5(task);
+    t1.join(); t2.join(); t3.join(); t4.join(); t5.join();
+
+    EXPECT_EQ(allowed.load(), 50);
+    EXPECT_EQ(admin_->zcard(k), 50);
+}
+
+TEST_F(SlidingWindowTest, SeparateReplicasShareStateThroughRedis) {
+    // Simulates two Aegis replicas: each has its OWN RedisCluster client (like
+    // two processes), no shared C++ state, only the atomic Lua script.
+    sw::redis::RedisCluster other_replica_client(redis_uri());
+    std::string k = key();
+    SlidingWindow replica_a(50, 60, *admin_);
+    SlidingWindow replica_b(50, 60, other_replica_client);
+    std::atomic<int> allowed{0};
+
+    auto task = [&](SlidingWindow* window) {
+        for (int i = 0; i < 50; ++i) {
+            if (window->consume(k, 1).allowed) ++allowed;
+        }
+    };
+
+    std::thread ta(task, &replica_a), tb(task, &replica_b);
     ta.join(); tb.join();
 
-    EXPECT_EQ(allowed, 50);
+    EXPECT_EQ(allowed.load(), 50);
     EXPECT_EQ(admin_->zcard(k), 50);
 }

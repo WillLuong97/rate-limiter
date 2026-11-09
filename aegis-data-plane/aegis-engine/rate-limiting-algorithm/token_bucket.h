@@ -14,43 +14,32 @@
 
 #include <chrono>
 #include "rate_limiter.h"
-#include <mutex>
 #include <stdexcept>
 #include <hiredis/hiredis.h>
 #include <string> 
 #include <sw/redis++/redis++.h>
 
-using namespace std; 
-
 class TokenBucket : public RateLimiter {
 public:
-    TokenBucket(const string& key, 
-                int capacity, 
+    TokenBucket(int capacity, 
                 int refill_rate,
-                // any single node in the cluster works as the entry point —
-                // redis-plus-plus will then discovers the rest via CLUSTER SLOTS internally after first connection
-                const string& cluster_uri = "tcp://127.0.0.1:7001"
-                );
+                sw::redis::RedisCluster& redis_cluster);
 
     // Attempt to consume `tokens` tokens.
     //Returns whether the request is allowed, plus remaining tokens and retry-after seconds.
-    RateLimitDecision consume(int token) override;
+    RateLimitDecision consume(const std::string& key, int token) override;
 
 private:
     // ── Redis operations ──────────────────────────────────────────────────────
     //This is main logic to execute the hiredis Lua script to write tokens into 
     //redis bucket or consume from it.
     //Returns whether the request is allowed, plus remaining tokens and retry-after seconds. 
-    RateLimitDecision execute_token_consumption_script(int token_requested);
+    RateLimitDecision execute_token_consumption_script(const std::string& key, int token_requested);
 
     // ── Private class members ──────────────────────────────────────────────────────
-    string key_; 
     int capacity_;
     int refill_rate_;
-    mutex mutex_;
-    // RedisCluster — NOT plain Redis but for it from Redis plus plus— handles slot routing,
-    // MOVED/ASK redirects, and per-node connection pooling internally
-    sw::redis::RedisCluster cluster_;
+    sw::redis::RedisCluster& redis_cluster_;
 
     
     // ── Private class members ──────────────────────────────────────────────────────

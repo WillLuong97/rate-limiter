@@ -4,14 +4,14 @@
 
 //Alias for for Envoy response code 
 using Code = envoy::service::ratelimit::v3::RateLimitResponse::Code;
-using LimiterFactory = std::function<std::unique_ptr<RateLimiter>(const std::string&, int, int, const std::string&)>;
+using LimiterFactory = std::function<std::unique_ptr<RateLimiter>(int, int, sw::redis::RedisCluster&)>;
 
 //Constructor 
 RateLimitServiceImpl::RateLimitServiceImpl(
     ConfigProvider& config_provider,
-    const std::string& cluster_nodes) 
+    sw::redis::RedisCluster& redis_cluster) 
       : config_provider_(config_provider),
-        cluster_nodes_(cluster_nodes)
+        redis_cluster_(redis_cluster)
 {}
 
 
@@ -30,8 +30,6 @@ grpc::Status RateLimitServiceImpl::ShouldRateLimit(
     //Unpack the request from Envoy and extract the IP address that we want to rate limit on 
     std::string incoming_ip = extract_ip(request); 
 
-    //TODO: This would potentially be a vulnerability here, we are essentially allowing spoof IPs to go through if the Envoy cannot include the IP address in their request 
-    // We will have to resume this, but in the meantime, we will let it fail open and allow through, given that Envoy is smart enough to always send a request with an IP address 
     if (incoming_ip.empty()) {
         //No IP address is found in the request, return an error code to Envoy -- log and fail open (Unable to perform rate limiting, so we will let the request to go through)
         std::cerr << "Error: no IP address is found in the Envoy rate limit request, allowing request to go through\n";
@@ -39,7 +37,7 @@ grpc::Status RateLimitServiceImpl::ShouldRateLimit(
         return grpc::Status::OK; 
     };
 
-    std::cout << "INFO: IP address found! Begin rate limiting...";
+    std::cout << "INFO: IP address found! Begin rate limiting...\n";
 
     //Construct a key for the rate limiter bucket
     std::string config_key = resolve_rule_key_from_request(request); 
@@ -49,8 +47,8 @@ grpc::Status RateLimitServiceImpl::ShouldRateLimit(
     RateLimitDecision decision;
 
     try {
-        RateLimiter* limiter = get_or_create_limiter(bucket_key, config_key); 
-        decision = limiter->consume();       
+        std::unique_ptr<RateLimiter> limiter = create_limiter(config_key); 
+        decision = limiter->consume(bucket_key);       
     } catch (const std::exception& e) {
         // Last line of defence: limiters fail open on Redis errors themselves,
         // this covers limiter creation and anything a limiter doesn't handle
@@ -119,16 +117,7 @@ std::string RateLimitServiceImpl::extract_ip(const RateLimitRequest* request) {
 }
 
 //Helper method to call a rate limiter algorithm and perform rate limting on the request IP 
-RateLimiter* RateLimitServiceImpl::get_or_create_limiter(const std::string bucket_key, const std::string rule_key) {  
-    //put a lock on the current rate limiting thread, RAII 
-    std::lock_guard<std::mutex> lock(limiter_mutex); 
-    
-    //return existing rate limiters if one is already created 
-    auto it = limiters_.find(bucket_key); 
-    if (it != limiters_.end()) {
-        return it->second.get();
-    }
-
+std::unique_ptr<RateLimiter> RateLimitServiceImpl::create_limiter(const std::string& rule_key) {  
 
     // ── Ask ConfigProvider for this rule's config ─────────────────────────────
     // Phase 1: reads from in-memory map in ConfigProvider
@@ -145,27 +134,18 @@ RateLimiter* RateLimitServiceImpl::get_or_create_limiter(const std::string bucke
         config = RateLimitConfig{}; //default constructor  
     }
 
-    //Create the right rate limiting algorithm based on the config 
-    std::cout << "[grpc_server] Creating limiter for: " << bucket_key
-              << " | rule: "      << rule_key
-              << " | algorithm: " << (config->algorithm ==
-                                      RateLimitConfig::TOKEN_BUCKET
-                                      ? "TOKEN_BUCKET" : "SLIDING_WINDOW")
-              << " | capacity: "  << config->capacity
-              << " | rate: "      << config->refill_rate << "\n";
-
     //This store the rate limiting algorithm name to the class implementation of that algorithm
     static const unordered_map<
         RateLimitConfig::RateLimitAlgorithm, 
         LimiterFactory> algorithm_factory = {
             {
-                RateLimitConfig::TOKEN_BUCKET, [](auto& key, auto capacity, auto refill_rate, auto& cluster_uri) {
-                    return std::make_unique<TokenBucket>(key, capacity, refill_rate, cluster_uri);
+                RateLimitConfig::TOKEN_BUCKET, [](int capacity, int refill_rate, sw::redis::RedisCluster& redis_cluster) {
+                    return std::make_unique<TokenBucket>(capacity, refill_rate, redis_cluster);
                 }
             }, 
             {  
-                RateLimitConfig::SLIDING_WINDOW, [](auto& key, auto capacity, auto window_seconds, auto& cluster_uri) {
-                    return std::make_unique<SlidingWindow>(key, capacity, window_seconds, cluster_uri);
+                RateLimitConfig::SLIDING_WINDOW, [](int capacity, int window_seconds, sw::redis::RedisCluster& redis_cluster) {
+                    return std::make_unique<SlidingWindow>(capacity, window_seconds, redis_cluster);
                 }
             }
         };
@@ -176,8 +156,8 @@ RateLimiter* RateLimitServiceImpl::get_or_create_limiter(const std::string bucke
         throw std::invalid_argument("Unsupported Algorithm");
     }
     
-    limiters_[bucket_key] = algorithm_it->second(bucket_key, config->capacity, config->refill_rate, cluster_nodes_);
-    return limiters_[bucket_key].get(); 
+    return algorithm_it->second(config->capacity, config->refill_rate, redis_cluster_);
+
 }
 
 //Helper method to find the config key for aegis from the hardcoded config map 
