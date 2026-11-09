@@ -11,16 +11,20 @@
 #include "rate-limiting-algorithm/rate_limiter.h"
 #include "rate-limiting-algorithm/token_bucket.h"
 
+#include "rate-limiting-algorithm/sliding_window.h"
+
+#include <functional>
 #include <unordered_map>
 #include <memory>
 #include <mutex>
 #include <string>
+#include "providers/config-providers.h"
 
 // Aliases for the long Envoy proto namespaces
 using RateLimitRequest  = envoy::service::ratelimit::v3::RateLimitRequest;
 using RateLimitResponse = envoy::service::ratelimit::v3::RateLimitResponse;
 using RateLimitService  = envoy::service::ratelimit::v3::RateLimitService;
-
+using Code              = envoy::service::ratelimit::v3::RateLimitResponse::Code;
 
 //Note: The RateLimitServiceImpl will implement the RateLimitService protobuf class from Envoy gRPC call 
 class RateLimitServiceImpl final : public RateLimitService::Service {
@@ -29,9 +33,8 @@ class RateLimitServiceImpl final : public RateLimitService::Service {
         //compiler to enforce the user to this class to explicitly call out 
         // the RateLimitServiceImpl class type when calling it 
         explicit RateLimitServiceImpl (
-            int capacity = 100,  //100 tokens
-            int refill_rate = 10, //10 seconds refill rate 
-            const std::string& cluster_nodes = "tcp://127.0.0.1:7001"
+            ConfigProvider& config_provider,          
+            sw::redis::RedisCluster& redis_cluster
        ); 
 
         grpc::Status ShouldRateLimit(
@@ -45,16 +48,18 @@ class RateLimitServiceImpl final : public RateLimitService::Service {
     std::string extract_ip(const RateLimitRequest* request); 
 
     // Build the Redis key from the IP address
-    std::string build_bucket_key_from_ip(const std::string& ip);
+    std::string build_bucket_key_from_ip(const std::string& ip, const std::string& config_key);
+
+    // ── Rule key resolution ───────────────────────────────────────────────────
+    // Determines which ConfigProvider rule key applies to this request.
+    // e.g. "ip" for generic IP limiting, "login" for login endpoint
+    // Expanded in Phase 2 to extract endpoint from request descriptors
+    std::string resolve_rule_key_from_request(const RateLimitRequest* request); 
 
 
-    //Get or create a token bucket for a given redis key
-    RateLimiter* get_or_create_limiter(const std::string key); 
+    //Build a limiter for this rule (one per request)
+    std::unique_ptr<RateLimiter> create_limiter(const std::string& rule_key); 
 
-    std::string cluster_nodes_; 
-    int capacity_ = 100;  //100 tokens
-    int refill_rate_ = 10; //10 seconds refill rate 
-    //One token bucket per IP address: 
-    std::unordered_map<std::string, std::unique_ptr<RateLimiter>> limiters_; 
-    std::mutex limiter_mutex;   
+    ConfigProvider& config_provider_;               // holds algorithm, capacity, rate per rule
+    sw::redis::RedisCluster& redis_cluster_; 
 };

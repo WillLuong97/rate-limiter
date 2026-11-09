@@ -9,12 +9,8 @@ module(
     version = "1.0", 
 )
 
-bazel_dep(name = "boost.program_options", version = "1.89.0.bcr.1")
-bazel_dep(name = "boost.filesystem", version = "1.89.0.bcr.1")
-bazel_dep(name = "boost.system", version = "1.89.0.bcr.1")
-bazel_dep(name = "boost.algorithm", version = "1.89.0.bcr.1")
-bazel_dep(name = "boost.asio", version = "1.89.0.bcr.1")
-bazel_dep(name = "boost.thread", version = "1.89.0.bcr.1")
+
+
 bazel_dep(name = "googletest", version = "1.14.0")
 bazel_dep(name = "rules_cc", version = "0.0.9")
 bazel_dep(name = "rules_proto",     version = "6.0.0")   # proto_library rule

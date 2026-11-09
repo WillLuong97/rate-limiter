@@ -13,5 +13,4 @@ dump.*
 bazel-bin
 bazel-out
 bazel-testlogs
-test
 MODULE.bazel.lock

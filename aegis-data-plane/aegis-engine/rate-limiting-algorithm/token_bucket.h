@@ -14,49 +14,32 @@
 
 #include <chrono>
 #include "rate_limiter.h"
-#include <mutex>
 #include <stdexcept>
 #include <hiredis/hiredis.h>
 #include <string> 
 #include <sw/redis++/redis++.h>
 
-using namespace std; 
-
 class TokenBucket : public RateLimiter {
 public:
-    TokenBucket(const string& key, 
-                int capacity, 
+    TokenBucket(int capacity, 
                 int refill_rate,
-                // any single node in the cluster works as the entry point —
-                // redis-plus-plus will then discovers the rest via CLUSTER SLOTS internally after first connection
-                const string& cluster_uri = "tcp://127.0.0.1:7001"
-                );
+                sw::redis::RedisCluster& redis_cluster);
 
     // Attempt to consume `tokens` tokens.
-    // Returns true if successful, false if not enough tokens.
-    bool consume(int consumed_token = 1) override; 
-
-    void consume_blocking(int consumed_token = 1) override; 
-
-    // Returns the current number of available tokens.
-    int available() override; 
-
+    //Returns whether the request is allowed, plus remaining tokens and retry-after seconds.
+    RateLimitDecision consume(const std::string& key, int token) override;
 
 private:
     // ── Redis operations ──────────────────────────────────────────────────────
     //This is main logic to execute the hiredis Lua script to write tokens into 
     //redis bucket or consume from it.
-    //Returns true if token were successfully consumed, otherwise, denies them 
-    bool execute_token_consumption_script(int token_requested);
+    //Returns whether the request is allowed, plus remaining tokens and retry-after seconds. 
+    RateLimitDecision execute_token_consumption_script(const std::string& key, int token_requested);
 
     // ── Private class members ──────────────────────────────────────────────────────
-    string key_; 
     int capacity_;
     int refill_rate_;
-    mutex mutex_;
-    // RedisCluster — NOT plain Redis but for it from Redis plus plus— handles slot routing,
-    // MOVED/ASK redirects, and per-node connection pooling internally
-    sw::redis::RedisCluster cluster_;
+    sw::redis::RedisCluster& redis_cluster_;
 
     
     // ── Private class members ──────────────────────────────────────────────────────
@@ -71,15 +54,18 @@ private:
     // ARGV[1]  = capacity             e.g. 100
     // ARGV[2]  = refill_rate          e.g. 10
     // ARGV[3]  = tokens_requested     e.g. 1
-    // ARGV[4]  = current unix time    e.g. 1717000000.123
     //
-    // Returns: 0 if allowed, 1 if denied
+    // Returns: {allowed (1/0), floor(remaining tokens), retry_after seconds}
     static constexpr const char* CONSUME_SCRIPT = R"(
         local key = KEYS[1]
         local capacity = tonumber(ARGV[1])
         local refill_rate = tonumber(ARGV[2])
         local token_req = tonumber(ARGV[3])
-        local now = tonumber(ARGV[4])
+
+        -- ── Step 0: Read current time from the Redis server ────────────────────────────
+        -- TIME returns {unix_seconds, microseconds} as strings
+        local t = redis.call('TIME')
+        local now = tonumber(t[1]) + tonumber(t[2]) / 1000000
 
         -- ── Step 1: Read current state from Redis ────────────────────────────
         -- HGET returns nil if the key doesn't exist yet (first request from IP)
@@ -101,29 +87,23 @@ private:
         tokens = math.min(capacity, tokens + (elasped * refill_rate))
 
         -- ── Step 4: Consumed the tokens ────────────────────────────
+        -- Return allowed status, remaining token, and time to retry again after being locked out
+        local allowed = 0
+        local retry_after = 0 
         if tokens >= token_req then 
-            -- Enough token, so remove the requested tokens from the current token and return 1
+            -- Enough token, so remove the requested tokens from the current token and mark the request allowed
             tokens = tokens - token_req
-
+            allowed = 1
+        else
+            -- Seconds until enough tokens have refilled to satisfy this request
+            retry_after = math.ceil((token_req-tokens) / refill_rate)
+        end
             -- Update the redis bucket with the new tokens value 
             redis.call('HSET', key, 'tokens', tokens)
             redis.call('HSET', key, 'last_refill', now)
 
             -- Auto-expired the key for this IP after 1 hour of inactivity, meaning the key has not been hit 
             redis.call('EXPIRE', key, 3600)
-            return 0
-
-        else
-            -- Not enough tokens — update last_refill but do not consume
-            -- We still write back so the refill timestamp stays accurate
-            redis.call('HSET', key, 'tokens', tokens)
-            redis.call('HSET', key, 'last_refill', now)
-
-            -- Auto-expired the key for this IP after 1 hour of inactivity, meaning the key has not been hit 
-            redis.call('EXPIRE', key, 3600)
-
-            return 1
-        end
+            return {allowed, math.floor(tokens), retry_after}
     )";
-    
 };

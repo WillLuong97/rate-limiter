@@ -100,6 +100,9 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: aegis_engine
+    environment:
+      AEGIS_REDIS_URI_HOST: "172.20.0.11"
+      AEGIS_REDIS_URI_PORT: "6379"
     networks:
       - aegis-network
     depends_on:
