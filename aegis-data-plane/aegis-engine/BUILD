@@ -44,7 +44,6 @@ cc_binary(
     name = "aegis-engine-main",
     srcs = ["aegis_engine_main.cc"],
     deps = [
-        "@boost.program_options",
         ":rate_limiting_lib",
         ":config_provider_lib",
         ":aegis_grpc_server_lib"
@@ -70,6 +69,20 @@ cc_test(
     name = "sliding_window_test",
     srcs = ["test/sliding_window_test.cc"],
     deps = [
+        ":rate_limiting_lib",
+        "@googletest//:gtest_main",
+    ],
+    copts = ["-std=c++17"],
+    linkopts = ["-lpthread"],
+    size = "small",
+)
+
+cc_test(
+    name = "aegis_grpc_server_test",
+    srcs = ["test/aegis_grpc_server_test.cc"],
+    deps = [
+        ":aegis_grpc_server_lib",
+        ":config_provider_lib",
         ":rate_limiting_lib",
         "@googletest//:gtest_main",
     ],
