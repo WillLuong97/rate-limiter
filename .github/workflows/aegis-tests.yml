@@ -1,0 +1,97 @@
+# Builds Aegis and runs all unit/integration test suites against a real
+# Redis Cluster. Branch protection on `main` requires the `test` job below to
+# pass before a PR can be merged.
+name: Aegis tests
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]   # also run after merges, which keeps the cache warm for PRs
+  workflow_dispatch:   # allow a manual run from the Actions tab
+
+# A newer push to the same PR cancels the older, still-running test run
+concurrency:
+  group: aegis-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-22.04   # same base as aegis-engine/Dockerfile
+    timeout-minutes: 180    # the first run compiles gRPC; later runs use the cache
+    defaults:
+      run:
+        working-directory: aegis-data-plane/aegis-engine
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Same as the Dockerfile: hiredis 1.3.0 (the version Bazel's @hiredis
+      # uses, so both agree on struct layouts), then redis-plus-plus. Both
+      # install into /usr/local, where the third_party/redis_plus_plus
+      # symlinks point.
+      - name: Install hiredis and redis-plus-plus
+        run: |
+          git clone --depth 1 --branch v1.3.0 https://github.com/redis/hiredis.git /tmp/hiredis
+          make -C /tmp/hiredis -j"$(nproc)"
+          sudo make -C /tmp/hiredis install
+          git clone --depth 1 https://github.com/sewenew/redis-plus-plus.git /tmp/redis-plus-plus
+          cmake -S /tmp/redis-plus-plus -B /tmp/redis-plus-plus/build -DREDIS_PLUS_PLUS_BUILD_TEST=OFF
+          cmake --build /tmp/redis-plus-plus/build -j"$(nproc)"
+          sudo cmake --install /tmp/redis-plus-plus/build
+          sudo ldconfig
+
+      # Installs Bazelisk (which reads .bazelversion) and saves Bazel's
+      # downloads and build outputs between runs, so gRPC is only compiled once.
+      - uses: bazel-contrib/setup-bazel@0.19.1
+        with:
+          module-root: aegis-data-plane/aegis-engine
+          bazelisk-cache: true
+          disk-cache: ${{ github.workflow }}
+          repository-cache: true
+
+      # Only the Redis services: the tests talk to Redis directly, so Envoy,
+      # Aegis and the backend aren't needed. On a Linux runner the host can
+      # reach the containers' 172.20.0.x addresses directly.
+      - name: Start the Redis cluster
+        run: |
+          docker compose up -d redis-node-1 redis-node-2 redis-node-3 \
+            redis-node-4 redis-node-5 redis-node-6 redis-cluster-init
+          for i in $(seq 1 30); do
+            if docker exec token-store-master-1 redis-cli cluster info | grep -q cluster_state:ok; then
+              echo "Redis cluster is ready"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::Redis cluster did not become ready"
+          docker compose logs redis-cluster-init
+          exit 1
+
+      - name: Build and run tests
+        env:
+          AEGIS_TEST_REDIS_URI: tcp://172.20.0.11:6379   # read by the test fixtures
+        run: |
+          bazel test //:aegis-engine-main //:token_bucket_test //:sliding_window_test //:aegis_grpc_server_test \
+            --test_env=AEGIS_TEST_REDIS_URI --test_output=errors --cache_test_results=no
+
+      # The tests SKIP (and Bazel still reports PASSED) when Redis is
+      # unreachable. In CI a skip must count as a failure.
+      - name: Fail if any test was skipped
+        run: |
+          if grep -rl "Redis cluster unreachable" bazel-testlogs/; then
+            echo "::error::Tests were skipped because Redis was unreachable"
+            exit 1
+          fi
+          echo "No skipped tests"
+
+      - name: Upload test logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bazel-testlogs
+          path: aegis-data-plane/aegis-engine/bazel-testlogs/**/test.log
+
+      - name: Stop the Redis cluster
+        if: always()
+        run: docker compose down -v
